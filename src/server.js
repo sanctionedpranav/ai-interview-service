@@ -6,53 +6,98 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config/index.js';
 import interviewRoutes from './routes/interviewRoutes.js';
+import { log } from './utils/logger.js';
+// Initialize BullMQ queue and worker for interview graph processing
+import './queues/interviewQueue.js';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.set('etag', false); // Disable etag to prevent 304 errors on POST requests
 
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(morgan('dev'));
+
+// Custom HTTP request logger — shows method, path, status, duration
+app.use((req, _res, next) => {
+  const start = Date.now();
+  _res.on('finish', () => {
+    const duration = Date.now() - start;
+    const color = _res.statusCode >= 500 ? '\x1b[31m' : _res.statusCode >= 400 ? '\x1b[33m' : '\x1b[32m';
+    const reset = '\x1b[0m';
+    const dim = '\x1b[2m';
+    console.log(
+      `  ${color}${req.method.padEnd(6)}${reset} ${dim}${req.originalUrl.padEnd(50)}${reset}` +
+      ` ${color}${_res.statusCode}${reset}  ${dim}${duration}ms${reset}`
+    );
+  });
+  next();
+});
+
 app.use('/audio', express.static(path.join(__dirname, '../public/audio')));
 
 // Routes
 app.use('/interview', interviewRoutes);
 
 // Health Check
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ai-interview', env: config.nodeEnv }));
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+  log.error('GLOBAL ERROR', err);
+  res.status(500).json({ 
+    error: 'Internal Server Error', 
+    message: err.message,
+    stack: config.nodeEnv === 'development' ? err.stack : undefined
+  });
+});
 
 // MongoDB Connection
 mongoose.connect(config.mongodbUri)
-  .then(() => console.log('✅ Connected to MongoDB'))
-  .catch((err) => console.error('❌ MongoDB Connection Error:', err));
+  .then(() => log.success('MongoDB connected'))
+  .catch((err) => log.error('MongoDB connection failed', err));
 
 // Start Server
 app.listen(config.port, async () => {
-  console.log(`\n🚀 AI Interview Service running on port ${config.port}`);
-  console.log(`   Environment: ${config.nodeEnv}`);
+  // ── Startup Banner ────────────────────────────────────────────────────────────
+  console.log('\n\x1b[35m\x1b[1m' + '═'.repeat(55) + '\x1b[0m');
+  console.log('\x1b[35m\x1b[1m  🤖 AI Interview Service\x1b[0m');
+  console.log('\x1b[35m\x1b[1m' + '═'.repeat(55) + '\x1b[0m');
+  console.log(`  Port        : \x1b[36m${config.port}\x1b[0m`);
+  console.log(`  Environment : \x1b[36m${config.nodeEnv}\x1b[0m`);
+  console.log(`  Groq Key    : \x1b[${config.groqApiKey ? '32m✅ set' : '31m❌ missing'}\x1b[0m`);
+  console.log(`  Gemini Key  : \x1b[${config.geminiApiKey ? '32m✅ set' : '31m❌ missing'}\x1b[0m`);
+  console.log('\x1b[35m\x1b[1m' + '─'.repeat(55) + '\x1b[0m');
 
-  // Lazily initialise Silero VAD (only if onnxruntime-node is installed)
+  // ── Silero VAD ────────────────────────────────────────────────────────────────
   try {
     const { vadService } = await import('./speech/vad.js');
     await vadService.init();
+    log.success('Silero VAD: ONNX model loaded');
   } catch (e) {
-    console.warn('⚠️  Silero VAD not loaded:', e.message);
-    console.warn('   Run: npm install && npm run setup');
+    log.warn(`Silero VAD not loaded: ${e.message}`);
+    console.log('   → Run: npm install && npm run setup');
   }
 
-  // Lazily check Piper TTS
+  // ── Piper TTS ─────────────────────────────────────────────────────────────────
   try {
     const { ttsService } = await import('./speech/tts.js');
     if (ttsService.isAvailable()) {
-      console.log('✅ Piper TTS: ready');
+      log.success('Piper TTS: binary found and ready');
       setInterval(() => ttsService.cleanup(), 60 * 60 * 1000);
     } else {
-      console.warn('⚠️  Piper TTS not ready. Run: npm run setup');
+      log.warn('Piper TTS not ready — run: npm run setup');
     }
   } catch (e) {
-    console.warn('⚠️  Piper TTS check failed:', e.message);
+    log.warn(`Piper TTS check failed: ${e.message}`);
   }
+
+  // ── LangGraph ─────────────────────────────────────────────────────────────────
+  log.success('LangGraph: interview graph compiled (8 nodes)');
+  console.log('  Nodes: introduction → vad_check → stt_transcribe → evaluate_answer');
+  console.log('         → generate_question / followup_question → tts_speak → END');
+  console.log('\x1b[35m\x1b[1m' + '═'.repeat(55) + '\x1b[0m\n');
 });

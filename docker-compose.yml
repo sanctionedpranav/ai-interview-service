@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  ai-interview-service:
+    build: .
+    container_name: ai-interview-service
+    restart: always
+    ports:
+      - "5005:5005"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-interview-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:

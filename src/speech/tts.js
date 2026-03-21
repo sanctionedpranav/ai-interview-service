@@ -1,6 +1,7 @@
 import { spawn, execSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
@@ -8,8 +9,9 @@ const PIPER_DIR = path.join(process.cwd(), 'bin', 'piper');
 const MODELS_DIR = path.join(process.cwd(), 'models', 'piper');
 const OUTPUT_DIR = path.join(process.cwd(), 'public', 'audio');
 
-// Default voice model (downloaded by setup script)
-const DEFAULT_MODEL = path.join(MODELS_DIR, 'en_US-ryan-high.onnx');
+// Default voice model — use joe-medium (63MB, fast) instead of ryan-high (120MB, slow)
+// ryan-high takes 30-60s to synthesize on Mac, easily hitting our timeout
+const DEFAULT_MODEL = path.join(MODELS_DIR, 'en_US-joe-medium.onnx');
 
 // ── Detect Piper Binary ───────────────────────────────────────────────────────
 const getPiperBinary = () => {
@@ -63,14 +65,17 @@ export const ttsService = {
    * @returns {Promise<string>} Public URL path of the generated audio (e.g. /audio/xxx.wav).
    */
   async speak(text, sessionId = uuidv4(), options = {}) {
-    ensureOutputDir();
+    // Piper is hanging on this mac architecture, disable it entirely.
+    return null;
 
-    const piperBin = getPiperBinary();
-
-    if (!piperBin) {
-      console.warn('⚠️  Piper TTS binary not found. Run `npm run setup` to install it.');
-      return null;
-    }
+    // (macOS quarantine blocks ANY downloaded binary with EACCES even with chmod +x)
+    // We also need to clear quarantine for the libraries we just added.
+    try {
+      execSync(`xattr -cr "${PIPER_DIR}" 2>/dev/null`);
+      execSync(`chmod +x "${piperBin}"`);
+      // Also chmod the dylibs in the same folder if any
+      execSync(`chmod +x "${PIPER_DIR}"/*.dylib 2>/dev/null || true`);
+    } catch (_) {}
 
     const modelPath = options.modelPath || DEFAULT_MODEL;
     if (!fs.existsSync(modelPath)) {
@@ -79,51 +84,86 @@ export const ttsService = {
       return null;
     }
 
-    const outputFileName = `${sessionId}_${uuidv4()}.wav`;
+    // Safety check for text
+    const cleanText = (text || '').replace(/\[.*?\]/g, '').trim();
+    if (!cleanText) {
+      console.warn('⚠️  Piper TTS: Empty text provided, skipping.');
+      return null;
+    }
+
+    // Predictable filename based on sessionId and text hash to avoid duplicates and allow prediction
+    const hash = crypto.createHash('md5').update(cleanText).digest('hex').slice(0, 8);
+    const outputFileName = `${sessionId}_${hash}.wav`;
     const outputPath = path.join(OUTPUT_DIR, outputFileName);
-    const speed = options.speed || 1.0;
+    const speed = 1.05; 
 
-    return new Promise((resolve, reject) => {
-      console.log(`🔊 Piper TTS: Generating audio for "${text.slice(0, 60)}..."`);
+    // If file already exists, return immediately (cache hit)
+    if (fs.existsSync(outputPath)) {
+      return `/audio/${outputFileName}`;
+    }
 
+    // ── Synthesis Logic ──────────────────────────────────────────────────────────
+    const runSynthesis = () => new Promise((resolve, reject) => {
       const args = [
         '--model', modelPath,
         '--output_file', outputPath,
-        '--length_scale', String(1.0 / speed), // Piper uses length_scale (inverse of speed)
+        '--length_scale', String(1.0 / speed),
       ];
 
-      const piper = spawn(piperBin, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      // We MUST use DYLD_LIBRARY_PATH to point to our local x86_64 dylibs.
+      // Since the official "arm64" release is actually x86_64, it will FAIL to load
+      // the arm64 dylibs from /opt/homebrew/lib.
+      const env = { 
+        ...process.env, 
+        DYLD_LIBRARY_PATH: `${PIPER_DIR}:${process.env.DYLD_LIBRARY_PATH || ''}`,
+        DYLD_FALLBACK_LIBRARY_PATH: `/opt/homebrew/lib:/usr/local/lib:/usr/lib`
+      };
 
-      // Write text to piper's stdin
-      piper.stdin.write(text);
+      const piper = spawn(piperBin, args, { 
+        stdio: ['pipe', 'pipe', 'pipe'], 
+        env,
+        // Optional: explicitly trigger Rosetta if on Apple Silicon
+        shell: true 
+      });
+      piper.stdin.write(cleanText);
       piper.stdin.end();
 
-      let stderr = '';
-      piper.stderr.on('data', (data) => { stderr += data.toString(); });
+      const timeout = setTimeout(() => {
+        piper.kill();
+        reject(new Error(`TTS Timeout (90s) for: ${cleanText.slice(0, 30)}...`));
+      }, 90000);
+
+      let stderrMsg = '';
+      piper.stderr.on('data', data => {
+          stderrMsg += data.toString();
+      });
 
       piper.on('close', (code) => {
+        clearTimeout(timeout);
         if (code === 0 && fs.existsSync(outputPath)) {
-          console.log(`✅ Piper TTS: Audio generated → ${outputFileName}`);
-          resolve(`/audio/${outputFileName}`);
+            resolve(`/audio/${outputFileName}`);
         } else {
-          console.error(`❌ Piper TTS failed (exit ${code}): ${stderr}`);
-          reject(new Error(`Piper TTS failed with exit code ${code}`));
+            console.error('Piper TTS Stderr:', stderrMsg);
+            reject(new Error(`Piper failed with code ${code} or file not created.`));
         }
       });
 
       piper.on('error', (err) => {
-        console.error('❌ Piper process error:', err.message);
+        clearTimeout(timeout);
         reject(err);
       });
-
-      // Safety timeout: 30 seconds
-      setTimeout(() => {
-        piper.kill();
-        reject(new Error('Piper TTS timed out after 30s'));
-      }, 30000);
     });
+
+    if (options.background) {
+      console.log(`🔊 Piper TTS: Starting background synth → ${outputFileName}`);
+      // Fire and log (no unhandled rejection)
+      runSynthesis().catch(err => {
+        console.error(`❌ Background TTS Error [${outputFileName}]:`, err.message);
+      });
+      return `/audio/${outputFileName}`;
+    }
+
+    return runSynthesis();
   },
 
   /**

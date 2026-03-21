@@ -1,380 +1,332 @@
 import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
 import { InterviewSession } from '../models/InterviewSession.js';
-import { aiService } from '../ai/aiService.js';
-import { prompts } from '../prompts/index.js';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
+import { log } from '../utils/logger.js';
+import { interviewQueue, interviewQueueEvents } from '../queues/interviewQueue.js';
 
 /**
- * Determine the next difficulty level based on running score (0-10 scale).
- * - Score > 7.5 → escalate to harder
- * - Score < 4.5 → drop to easier
- * - Otherwise → maintain current
+ * Interview Controller
+ *
+ * All heavy AI processing (interviewGraph.invoke) is now routed through
+ * the BullMQ-backed interviewQueue. This allows controlled concurrency
+ * (default: 20 concurrent graph invocations) so the LLM/AI service is
+ * not overwhelmed under high load (300-500 concurrent students).
+ *
+ * Graph modes:
+ *   'start'  → generate_question (Q0: intro) → ask_question → END
+ *   'answer' → evaluate_answer → (followup | generate_question | end_interview) → ask_question → END
+ *   'finish' → end_interview → ask_question → END
+ *   'quit'   → quit_confirmation → END
  */
-const adaptDifficulty = (currentDifficulty, runningScore) => {
-  if (runningScore >= 7.5) {
-    if (currentDifficulty === 'entry') return 'intermediate';
-    if (currentDifficulty === 'intermediate') return 'senior';
-  }
-  if (runningScore <= 4.5) {
-    if (currentDifficulty === 'senior') return 'intermediate';
-    if (currentDifficulty === 'intermediate') return 'entry';
-  }
-  return currentDifficulty;
+
+// Helper: enqueue a graph invocation and wait for the result
+const invokeGraph = async (graphState) => {
+    const job = await interviewQueue.add('graph-invoke', { graphState });
+    const result = await job.waitUntilFinished(interviewQueueEvents, 120000); // 120s timeout
+    return result;
 };
 
-/**
- * Update running score as a rolling weighted average.
- * More recent scores carry slightly more weight.
- */
-const updateRunningScore = (currentAvg, newScore, totalAnswers) => {
-  // Weighted: 70% historical + 30% new score after 3+ answers
-  if (totalAnswers <= 2) return (currentAvg + newScore) / 2;
-  return (currentAvg * 0.7) + (newScore * 0.3);
-};
+// ── Build graph state from DB session ─────────────────────────────────────────
+const sessionToState = (session, overrides = {}) => ({
+    sessionId: session.sessionId,
+    jobRole: session.jobRole,
+    interviewType: session.interviewType,
+    candidateProfile: session.candidateProfile || {},
+    candidateContext: session.candidateContext || null,
+    isIntroQuestion: session.isIntroQuestion !== undefined ? session.isIntroQuestion : true,
+    difficultyLevel: session.difficultyLevel || 'intermediate',
+    maxQuestions: session.maxQuestions || 8,
+    questionCount: session.questionCount || 0,
+    runningScore: session.runningScore || 5,
+    followupCount: session.followupCount || 0,
+    questionHistory: session.questionHistory || [],
+    answerHistory: session.answerHistory || [],
+    coveredTopics: session.coveredTopics || [],
+    weakAreas: [],
+    cheatingEvents: session.cheatingEvents || [],
+    transcript: session.transcript || [],
+    // Output fields
+    currentQuestion: '',
+    transcript_text: '',
+    currentAnswer: '',
+    evaluation: null,
+    audio_url: null,
+    is_complete: false,
+    silence_detected: false,
+    error: null,
+    backgroundQuestionCount: session.backgroundQuestionCount || 0,
+    ...overrides,
+});
 
-/**
- * Extract covered topics from question history.
- */
-const getCoveredTopics = (questionHistory) =>
-  questionHistory.map(q => q.topic).filter(Boolean);
-
-/**
- * Get weak areas from answer history (topics where score < 5).
- */
-const getWeakAreas = (answerHistory, questionHistory) => {
-  const weak = [];
-  answerHistory.forEach((a, i) => {
-    if (a.score && a.score < 5 && questionHistory[i]?.topic) {
-      weak.push(questionHistory[i].topic);
+// ── Persist graph output back to DB ──────────────────────────────────────────
+const persist = async (session, out) => {
+    if (out.candidateContext !== undefined) session.candidateContext = out.candidateContext;
+    if (out.isIntroQuestion !== undefined) session.isIntroQuestion = out.isIntroQuestion;
+    if (out.difficultyLevel) session.difficultyLevel = out.difficultyLevel;
+    if (out.runningScore !== undefined) session.runningScore = out.runningScore;
+    if (out.questionCount !== undefined) session.questionCount = out.questionCount;
+    if (out.followupCount !== undefined) session.followupCount = out.followupCount;
+    if (out.questionHistory) session.questionHistory = out.questionHistory;
+    if (out.answerHistory) session.answerHistory = out.answerHistory;
+    if (out.transcript) session.transcript = out.transcript;
+    if (out.coveredTopics) session.coveredTopics = out.coveredTopics;
+    if (out.backgroundQuestionCount !== undefined) session.backgroundQuestionCount = out.backgroundQuestionCount;
+    if (out.is_complete) {
+        session.interviewStage = 'FINAL_EVALUATION';
+        session.endTime = new Date();
     }
-  });
-  return [...new Set(weak)]; // deduplicate
-};
-
-/**
- * Run TTS (Piper if available) and return audioUrl or null.
- */
-const generateTTS = async (text, sessionId) => {
-  try {
-    const { ttsService } = await import('../speech/tts.js');
-    if (ttsService.isAvailable()) {
-      const url = await ttsService.speak(text, sessionId);
-      return url;
-    }
-  } catch (e) {
-    console.warn('TTS skipped:', e.message);
-  }
-  return null;
-};
-
-// ── START INTERVIEW ────────────────────────────────────────────────────────────
-export const startInterview = async (req, res) => {
-  try {
-    const { userId, jobRole, interviewType = 'technical', difficulty = 'intermediate', maxQuestions = 8 } = req.body;
-
-    if (!userId || !jobRole) {
-      return res.status(400).json({ error: 'userId and jobRole are required' });
-    }
-
-    const sessionId = uuidv4();
-    const candidateProfile = { jobRole, userId, interviewType, difficulty };
-
-    // Generate AI introduction
-    const introResponse = await aiService.generateCompletion(
-      prompts.INTRODUCTION(jobRole, candidateProfile)
-    );
-
-    // Generate the first technical question right away so it's ready
-    const firstQ = await aiService.generateCompletion(
-      prompts.GENERATE_QUESTION(jobRole, [], [], difficulty, [], 1, maxQuestions)
-    );
-
-    // Persist session
-    const session = await InterviewSession.create({
-      sessionId,
-      userId,
-      jobRole,
-      interviewType,
-      candidateProfile,
-      difficultyLevel: difficulty,
-      maxQuestions,
-      runningScore: 5,
-      coveredTopics: [],
-      followupCount: 0,
-      questionCount: 0,
-      interviewStage: 'INTRODUCTION',
-      transcript: [
-        { role: 'interviewer', text: introResponse.text },
-      ],
-      questionHistory: [],
-      answerHistory: [],
-    });
-
-    // TTS for introduction
-    const audioUrl = await generateTTS(introResponse.text, sessionId);
-
-    return res.status(201).json({
-      sessionId,
-      firstQuestion: introResponse.text,
-      audioUrl,
-    });
-  } catch (error) {
-    console.error('Start Interview Error:', error.message);
-    return res.status(500).json({ error: 'Failed to start interview: ' + error.message });
-  }
-};
-
-// ── CORE ANSWER PROCESSING (shared by text + audio paths) ─────────────────────
-const processAnswer = async (session, answerText) => {
-  const coveredTopics = getCoveredTopics(session.questionHistory);
-  const weakAreas = getWeakAreas(session.answerHistory, session.questionHistory);
-
-  const lastQuestion = session.questionHistory.slice(-1)[0];
-  const questionText = lastQuestion?.question || 'Please introduce yourself briefly.';
-  const expectedConcepts = lastQuestion?.expectedConcepts || [];
-  const difficulty = session.difficultyLevel;
-
-  // ── Step A: Evaluate the answer ───────────────────────────────────────────
-  const evaluation = await aiService.generateCompletion(
-    prompts.EVALUATE_ANSWER(questionText, answerText, expectedConcepts, difficulty)
-  );
-  const score = evaluation.score ?? 5;
-
-  // ── Step B: Update running score and adapt difficulty ────────────────────
-  const totalAnswers = session.answerHistory.length + 1;
-  const newRunningScore = updateRunningScore(session.runningScore, score, totalAnswers);
-  const newDifficulty = adaptDifficulty(difficulty, newRunningScore);
-
-  // ── Step C: Decide next action ────────────────────────────────────────────
-  const isSessionComplete = session.questionCount >= session.maxQuestions;
-  let nextQuestion = null;
-  let questionType = 'main';
-  let newTopic = null;
-
-  if (isSessionComplete) {
-    // End the interview
-    nextQuestion = "That concludes our interview. Thank you for your time and thoughtful answers! I'll now prepare your evaluation report.";
-  } else if (evaluation.needsFollowup && session.followupCount < 2) {
-    // Ask a follow-up to probe the weak area
-    const followup = await aiService.generateCompletion(
-      prompts.FOLLOWUP_QUESTION(questionText, answerText, evaluation)
-    );
-    nextQuestion = followup.question;
-    newTopic = followup.topic;
-    questionType = 'followup';
-  } else {
-    // Generate a fresh adaptive question
-    const newQuestionNum = session.questionCount + 1;
-    const nextQ = await aiService.generateCompletion(
-      prompts.GENERATE_QUESTION(
-        session.jobRole,
-        coveredTopics,
-        weakAreas,
-        newDifficulty,
-        session.questionHistory,
-        newQuestionNum,
-        session.maxQuestions,
-      )
-    );
-    nextQuestion = nextQ.question;
-    newTopic = nextQ.topic;
-    questionType = 'main';
-
-    // Push next question to history
-    session.questionHistory.push({
-      question: nextQ.question,
-      topic: nextQ.topic,
-      difficulty: newDifficulty,
-      type: 'main',
-      expectedConcepts: nextQ.expectedConcepts,
-    });
-  }
-
-  // ── Step D: Persist updates ───────────────────────────────────────────────
-  // Record the answer
-  session.answerHistory.push({
-    question: questionText,
-    answer: answerText,
-    score,
-    evaluation,
-    timestamp: new Date(),
-  });
-
-  // Update transcript
-  session.transcript.push({ role: 'candidate', text: answerText });
-  session.transcript.push({ role: 'interviewer', text: nextQuestion });
-
-  // Update session state
-  session.runningScore = newRunningScore;
-  session.difficultyLevel = newDifficulty;
-  session.interviewStage = isSessionComplete ? 'FINAL_EVALUATION' : 'WAIT_FOR_ANSWER';
-
-  if (questionType === 'followup') {
-    session.followupCount = (session.followupCount || 0) + 1;
-    if (newTopic) {
-      session.questionHistory.push({
-        question: nextQuestion,
-        topic: newTopic,
-        difficulty: newDifficulty,
-        type: 'followup',
-      });
-    }
-  } else if (!isSessionComplete) {
-    session.followupCount = 0;
-    session.questionCount = (session.questionCount || 0) + 1;
-    if (newTopic) session.coveredTopics.addToSet(newTopic);
-  }
-
-  await session.save();
-
-  return {
-    transcript: answerText,
-    evaluation,
-    nextQuestion,
-    isComplete: isSessionComplete,
-    difficultyLevel: newDifficulty,
-    questionNumber: session.questionCount,
-    totalQuestions: session.maxQuestions,
-    questionType,
-  };
-};
-
-// ── PROCESS AUDIO (VAD → STT → AI → TTS) ─────────────────────────────────────
-export const processAudio = async (req, res) => {
-  try {
-    const { sessionId } = req.body;
-    const audioFile = req.file;
-
-    if (!audioFile) return res.status(400).json({ error: 'No audio provided' });
-
-    const session = await InterviewSession.findOne({ sessionId });
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-
-    // ── Step 1: Silero VAD ─────────────────────────────────────────────────
-    let hasSpeech = true;
-    try {
-      const { vadService } = await import('../speech/vad.js');
-      const { readFileSync } = await import('fs');
-      const pcmBuffer = readFileSync(audioFile.path);
-      hasSpeech = await vadService.isSpeechPresent(pcmBuffer);
-      vadService.resetState();
-    } catch (vadErr) {
-      console.warn('VAD skipped:', vadErr.message);
-    }
-
-    if (!hasSpeech) {
-      const { unlink } = await import('fs/promises');
-      try { await unlink(audioFile.path); } catch (_) {}
-      return res.json({ silenceDetected: true, nextQuestion: null, audioUrl: null });
-    }
-
-    // ── Step 2: Whisper STT ────────────────────────────────────────────────
-    let answerText = '';
-    try {
-      const { sttService } = await import('../speech/stt.js');
-      answerText = await sttService.transcribe(audioFile.path);
-    } catch (sttErr) {
-      console.warn('STT failed:', sttErr.message);
-      answerText = '[transcription unavailable]';
-    }
-
-    // Cleanup temp audio file
-    const { unlink } = await import('fs/promises');
-    try { await unlink(audioFile.path); } catch (_) {}
-
-    // ── Step 3: Process with AI engine ────────────────────────────────────
-    const result = await processAnswer(session, answerText);
-
-    // ── Step 4: Piper TTS ─────────────────────────────────────────────────
-    result.audioUrl = await generateTTS(result.nextQuestion, sessionId);
-
-    return res.json(result);
-  } catch (error) {
-    console.error('Process Audio Error:', error.message);
-    return res.status(500).json({ error: 'Failed to process audio: ' + error.message });
-  }
-};
-
-// ── SUBMIT TEXT ANSWER ─────────────────────────────────────────────────────────
-export const submitTextAnswer = async (req, res) => {
-  try {
-    const { sessionId, answerText } = req.body;
-
-    if (!sessionId || !answerText) {
-      return res.status(400).json({ error: 'sessionId and answerText are required' });
-    }
-
-    const session = await InterviewSession.findOne({ sessionId });
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-
-    const result = await processAnswer(session, answerText);
-
-    // TTS for the next question
-    result.audioUrl = await generateTTS(result.nextQuestion, sessionId);
-
-    return res.json(result);
-  } catch (error) {
-    console.error('Submit Answer Error:', error.message);
-    return res.status(500).json({ error: 'Failed to process answer: ' + error.message });
-  }
-};
-
-// ── RECORD CHEATING EVENT ─────────────────────────────────────────────────────
-export const recordCheatingEvent = async (req, res) => {
-  try {
-    const { sessionId, event, timestamp, metadata } = req.body;
-    const session = await InterviewSession.findOne({ sessionId });
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-
-    session.cheatingEvents = session.cheatingEvents || [];
-    session.cheatingEvents.push({ event, timestamp: timestamp || new Date(), metadata });
     await session.save();
-
-    return res.json({ success: true });
-  } catch (error) {
-    return res.status(500).json({ error: 'Failed to record event' });
-  }
 };
 
-// ── GET SESSION STATE ─────────────────────────────────────────────────────────
-export const getSessionState = async (req, res) => {
-  try {
-    const session = await InterviewSession.findOne({ sessionId: req.params.sessionId });
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    return res.json(session);
-  } catch (error) {
-    return res.status(500).json({ error: 'Failed to fetch state' });
-  }
-};
+// ── POST /interview/start ─────────────────────────────────────────────────────
+export const startInterview = async (req, res) => {
+    try {
+        const {
+            userId, jobRole,
+            interviewType = 'technical',
+            difficulty = 'intermediate',
+            maxQuestions = 8,
+        } = req.body;
 
-// ── GET FINAL INTERVIEW RESULT ────────────────────────────────────────────────
-export const getInterviewResult = async (req, res) => {
-  try {
-    const session = await InterviewSession.findOne({ sessionId: req.params.sessionId });
-    if (!session) return res.status(404).json({ error: 'Session not found' });
+        if (!userId || !jobRole) {
+            return res.status(400).json({ error: 'userId and jobRole are required' });
+        }
 
-    if (!session.evaluationReport) {
-      const result = await aiService.generateCompletion(
-        prompts.FINAL_EVALUATION(
-          session.jobRole,
-          session.interviewType,
-          session.answerHistory || [],
-          session.cheatingEvents || [],
-          session.difficultyLevel,
-        )
-      );
-      session.evaluationReport = result;
-      session.finalScore = result.overallScore;
-      session.finalRecommendation = result.recommendation;
-      session.interviewStage = 'END';
-      session.endTime = new Date();
-      await session.save();
+        const sessionId = uuidv4();
+        const session = await InterviewSession.create({
+            sessionId, userId, jobRole, interviewType,
+            candidateProfile: { jobRole, userId, interviewType, difficulty },
+            difficultyLevel: difficulty,
+            maxQuestions,
+            isIntroQuestion: true,
+            runningScore: 5,
+            questionCount: 0,
+            followupCount: 0,
+            coveredTopics: [],
+            questionHistory: [],
+            answerHistory: [],
+            transcript: [],
+            interviewStage: 'INTRODUCTION',
+        });
+
+        log.info(`Starting session: ${sessionId} | ${jobRole}`);
+
+        // Queued: mode='start' → generate_question (Q0) → ask_question → END
+        const out = await invokeGraph(sessionToState(session, { mode: 'start' }));
+        await persist(session, out);
+
+        return res.status(201).json({
+            sessionId,
+            firstQuestion: out.currentQuestion,
+            audioUrl: out.audio_url,
+            phase: 'INTRO',
+        });
+    } catch (err) {
+        log.error('startInterview', err);
+        return res.status(500).json({ error: err.message });
     }
+};
 
-    return res.json(session.evaluationReport);
-  } catch (error) {
-    console.error('Get Result Error:', error.message);
-    return res.status(500).json({ error: 'Failed to fetch result: ' + error.message });
-  }
+// ── POST /interview/answer (text) ─────────────────────────────────────────────
+export const submitTextAnswer = async (req, res) => {
+    try {
+        const { sessionId, answerText, codeContext } = req.body;
+        if (!sessionId || !answerText) {
+            return res.status(400).json({ error: 'sessionId and answerText required' });
+        }
+
+        const session = await InterviewSession.findOne({ sessionId });
+        if (!session) return res.status(404).json({ error: 'Session not found' });
+
+        log.info(`📝 Answer for session: ${sessionId}`);
+
+        // Queued: mode='answer' → evaluate_answer → route → ask_question → END
+        const out = await invokeGraph(
+            sessionToState(session, {
+                mode: 'answer',
+                currentAnswer: answerText,
+                codeContext: codeContext ? JSON.parse(codeContext) : null,
+            })
+        );
+
+        await persist(session, out);
+
+        return res.json({
+            nextQuestion: out.currentQuestion,
+            audioUrl: out.audio_url,
+            evaluation: out.evaluation,
+            isComplete: out.is_complete,
+            difficultyLevel: out.difficultyLevel,
+            questionNumber: out.questionCount,
+            totalQuestions: out.maxQuestions,
+            phase: out.isIntroQuestion === false && out.questionCount === 0 ? 'INTRO' : 'TECHNICAL',
+        });
+    } catch (err) {
+        log.error('submitTextAnswer', err);
+        return res.status(500).json({ error: err.message });
+    }
+};
+
+// ── POST /interview/audio ─────────────────────────────────────────────────────
+export const processAudio = async (req, res) => {
+    try {
+        const { sessionId } = req.body;
+        const audioFile = req.file;
+        if (!audioFile) return res.status(400).json({ error: 'No audio file provided' });
+
+        const session = await InterviewSession.findOne({ sessionId });
+        if (!session) return res.status(404).json({ error: 'Session not found' });
+
+        log.info(`🎙  Audio for session: ${sessionId}`);
+
+        // Run VAD + STT synchronously (these are fast; only graph invoke is slow)
+        let transcribedText = '';
+        let silenceDetected = false;
+
+        if (audioFile.path && fs.existsSync(audioFile.path)) {
+            try {
+                const { vadService } = await import('../speech/vad.js');
+                const pcm = fs.readFileSync(audioFile.path);
+                const hasSpeech = await vadService.isSpeechPresent(pcm);
+                vadService.resetState();
+                silenceDetected = !hasSpeech;
+                const kb = fs.statSync(audioFile.path).size / 1024;
+                log.vadResult(hasSpeech, kb);
+            } catch (e) {
+                log.warn(`VAD skipped: ${e.message}`);
+            }
+        }
+
+        if (silenceDetected) {
+            return res.json({ silenceDetected: true, nextQuestion: null, audioUrl: null });
+        }
+
+        try {
+            const { sttService } = await import('../speech/stt.js');
+            transcribedText = await sttService.transcribe(audioFile.path);
+            log.sttResult(transcribedText);
+        } catch (e) {
+            log.sttFallback(e.message);
+            transcribedText = '[transcription unavailable]';
+        }
+        try { fs.unlinkSync(audioFile.path); } catch (_) {}
+
+        // Queued: mode='answer' with the transcribed text
+        const out = await invokeGraph(
+            sessionToState(session, {
+                mode: 'answer',
+                currentAnswer: transcribedText,
+                codeContext: req.body.codeContext ? JSON.parse(req.body.codeContext) : null,
+            })
+        );
+
+        await persist(session, out);
+
+        return res.json({
+            transcript: transcribedText,
+            nextQuestion: out.currentQuestion,
+            audioUrl: out.audio_url,
+            evaluation: out.evaluation,
+            isComplete: out.is_complete,
+            difficultyLevel: out.difficultyLevel,
+            questionNumber: out.questionCount,
+            totalQuestions: out.maxQuestions,
+            phase: 'TECHNICAL',
+        });
+    } catch (err) {
+        log.error('processAudio', err);
+        return res.status(500).json({ error: err.message });
+    }
+};
+
+// ── POST /interview/quit ──────────────────────────────────────────────────────
+export const quitInterview = async (req, res) => {
+    try {
+        const { sessionId } = req.body;
+        const session = await InterviewSession.findOne({ sessionId });
+        if (!session) return res.status(404).json({ error: 'Session not found' });
+
+        // Queued: mode='quit' 
+        const out = await invokeGraph(sessionToState(session, { mode: 'quit' }));
+        session.interviewStage = 'END';
+        session.endTime = new Date();
+        await session.save();
+
+        return res.json({ message: out.currentQuestion, isComplete: true });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+};
+
+// ── POST /interview/silence ───────────────────────────────────────────────────
+export const handleSilence = async (req, res) => {
+    try {
+        const { sessionId } = req.body;
+        const session = await InterviewSession.findOne({ sessionId });
+        if (!session) return res.status(404).json({ error: 'Session not found' });
+
+        log.info(`🤫 Silence detected for session: ${sessionId}. Generating nudge...`);
+
+        // Queued: mode='silence'
+        const out = await invokeGraph(sessionToState(session, { mode: 'silence' }));
+        await persist(session, out);
+
+        return res.json({
+            nextQuestion: out.currentQuestion,
+            audioUrl: out.audio_url,
+        });
+    } catch (err) {
+        log.error('handleSilence', err);
+        return res.status(500).json({ error: err.message });
+    }
+};
+
+// ── GET /interview/state/:sessionId ──────────────────────────────────────────
+export const getSessionState = async (req, res) => {
+    try {
+        const session = await InterviewSession.findOne({ sessionId: req.params.sessionId });
+        if (!session) return res.status(404).json({ error: 'Session not found' });
+        return res.json(session);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+};
+
+// ── GET /interview/result/:sessionId ─────────────────────────────────────────
+export const getInterviewResult = async (req, res) => {
+    try {
+        const session = await InterviewSession.findOne({ sessionId: req.params.sessionId });
+        if (!session) return res.status(404).json({ error: 'Session not found' });
+
+        if (!session.evaluationReport) {
+            log.info(`Generating final report for: ${req.params.sessionId}`);
+            // Queued: mode='finish'
+            const out = await invokeGraph(sessionToState(session, { mode: 'finish' }));
+            session.evaluationReport = out.evaluation;
+            session.finalScore = out.evaluation?.overallScore;
+            session.finalRecommendation = out.evaluation?.recommendation;
+            session.interviewStage = 'END';
+            session.endTime = new Date();
+            await session.save();
+        }
+
+        return res.json(session.evaluationReport);
+    } catch (err) {
+        log.error('getInterviewResult', err);
+        return res.status(500).json({ error: err.message });
+    }
+};
+
+// ── POST /interview/cheating-event ────────────────────────────────────────────
+export const recordCheatingEvent = async (req, res) => {
+    try {
+        const { sessionId, event, timestamp, metadata } = req.body;
+        const session = await InterviewSession.findOne({ sessionId });
+        if (!session) return res.status(404).json({ error: 'Session not found' });
+        session.cheatingEvents = [...(session.cheatingEvents || []), { event, timestamp: timestamp || new Date(), metadata }];
+        await session.save();
+        return res.json({ success: true });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
 };

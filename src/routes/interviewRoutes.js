@@ -4,6 +4,8 @@ import {
   startInterview, 
   processAudio,
   submitTextAnswer,
+  quitInterview,
+  handleSilence,
   recordCheatingEvent, 
   getSessionState, 
   getInterviewResult 
@@ -15,6 +17,8 @@ const upload = multer({ dest: 'uploads/' });
 router.post('/start', startInterview);
 router.post('/audio', upload.single('audio'), processAudio);
 router.post('/answer', submitTextAnswer);
+router.post('/silence', handleSilence);
+router.post('/quit', quitInterview);
 router.post('/cheating-event', recordCheatingEvent);
 router.get('/state/:sessionId', getSessionState);
 router.get('/result/:sessionId', getInterviewResult);

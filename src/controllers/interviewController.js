@@ -45,6 +45,10 @@ const sessionToState = (session, overrides = {}) => ({
     weakAreas: [],
     cheatingEvents: session.cheatingEvents || [],
     transcript: session.transcript || [],
+    // Chapter interview fields
+    interviewMode: session.interviewMode || 'generic',
+    customPrompt: session.customPrompt || null,
+    chapterTitle: session.chapterTitle || null,
     // Output fields
     currentQuestion: '',
     transcript_text: '',
@@ -86,10 +90,21 @@ export const startInterview = async (req, res) => {
             interviewType = 'technical',
             difficulty = 'intermediate',
             maxQuestions = 8,
+            // Chapter interview fields (optional)
+            interviewMode = 'generic',
+            customPrompt = null,
+            lectureId = null,
+            chapterTitle = null,
+            courseTitle = null,
         } = req.body;
 
         if (!userId || !jobRole) {
             return res.status(400).json({ error: 'userId and jobRole are required' });
+        }
+
+        // For chapter interviews, require a customPrompt
+        if (interviewMode === 'chapter' && !customPrompt) {
+            return res.status(400).json({ error: 'customPrompt is required for chapter interviews' });
         }
 
         const sessionId = uuidv4();
@@ -107,9 +122,15 @@ export const startInterview = async (req, res) => {
             answerHistory: [],
             transcript: [],
             interviewStage: 'INTRODUCTION',
+            // Chapter interview metadata
+            interviewMode,
+            customPrompt,
+            lectureId,
+            chapterTitle: chapterTitle || jobRole,
+            courseTitle,
         });
 
-        log.info(`Starting session: ${sessionId} | ${jobRole}`);
+        log.info(`Starting session: ${sessionId} | ${jobRole} | mode: ${interviewMode}`);
 
         // Queued: mode='start' → generate_question (Q0) → ask_question → END
         const out = await invokeGraph(sessionToState(session, { mode: 'start' }));
@@ -120,6 +141,8 @@ export const startInterview = async (req, res) => {
             firstQuestion: out.currentQuestion,
             audioUrl: out.audio_url,
             phase: 'INTRO',
+            interviewMode,
+            chapterTitle: chapterTitle || jobRole,
         });
     } catch (err) {
         log.error('startInterview', err);

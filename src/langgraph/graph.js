@@ -34,6 +34,7 @@ import { StateGraph, END, START } from '@langchain/langgraph';
 import fs from 'fs';
 import { aiService } from '../ai/aiService.js';
 import { prompts } from '../prompts/index.js';
+import { chapterPrompts } from '../prompts/chapterInterview.js';
 import { log } from '../utils/logger.js';
 
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ const STATE_CHANNELS = {
   cheatingEvents: { value: merge, default: () => [] },
   transcript: { value: merge, default: () => [] },
 
-  // Outputs
+  // outputs
   currentQuestion: { value: merge, default: () => '' },
   transcript_text: { value: merge, default: () => '' },
   evaluation: { value: merge, default: () => null },
@@ -82,6 +83,10 @@ const STATE_CHANNELS = {
   silence_detected: { value: merge, default: () => false },
   error: { value: merge, default: () => null },
   backgroundQuestionCount: { value: merge, default: () => 0 },
+  // Chapter interview state
+  interviewMode: { value: merge, default: () => 'generic' },
+  customPrompt: { value: merge, default: () => null },
+  chapterTitle: { value: merge, default: () => null },
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -121,6 +126,99 @@ const evaluateAnswerNode = async (state) => {
     return { ...state, evaluation: { score: 5, needsFollowup: false } };
   }
 
+  // ── CHAPTER INTERVIEW MODE ────────────────────────────────────────
+  if (state.interviewMode === 'chapter') {
+    const chapterTitle = state.chapterTitle || state.jobRole;
+    const adminPrompt = state.customPrompt || `Questions about ${chapterTitle}`;
+    const nextNum = state.questionCount + 1;
+
+    // Skip background discovery for chapter mode — go straight to chapter evaluation
+    if (state.isIntroQuestion) {
+      // Even the first "intro" answer goes through chapter evaluation
+      const result = await aiService.generateCompletion(
+        chapterPrompts.CHAPTER_CONSOLIDATED_INTERACTION({
+          chapterTitle,
+          adminPrompt,
+          lastQuestion: lastQ?.question || '',
+          candidateAnswer: answer,
+          expectedConcepts: lastQ?.expectedConcepts || [],
+          difficulty: state.difficultyLevel,
+          coveredTopics: state.coveredTopics,
+          questionNumber: 1,
+          totalQuestions: state.maxQuestions,
+        })
+      );
+
+      if (result?.evaluation?.isQuit) return { ...state, mode: 'quit', is_complete: true };
+
+      const evalResult = result?.evaluation || { score: 7, feedback: 'Acknowledged.' };
+      const nextQ = result?.nextQuestion || `Can you tell me more about ${chapterTitle}?`;
+      const nextTopic = result?.nextTopic || 'Concept';
+
+      return {
+        ...state,
+        evaluation: evalResult,
+        currentQuestion: nextQ,
+        questionCount: 1,
+        isIntroQuestion: false,
+        backgroundQuestionCount: 0,
+        coveredTopics: [...state.coveredTopics, nextTopic],
+        answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
+        questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: result?.nextExpectedConcepts || [], difficulty: state.difficultyLevel }],
+        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
+        is_complete: !!(result?.is_complete || 1 >= state.maxQuestions),
+      };
+    }
+
+    // Phase 2+ technical answers for chapter mode
+    log.info(`Chapter interaction Q${nextNum}...`);
+    const consolidated = await aiService.generateCompletion(
+      chapterPrompts.CHAPTER_CONSOLIDATED_INTERACTION({
+        chapterTitle,
+        adminPrompt,
+        lastQuestion: lastQ?.question || '',
+        candidateAnswer: answer,
+        expectedConcepts: lastQ?.expectedConcepts || [],
+        difficulty: state.difficultyLevel,
+        coveredTopics: state.coveredTopics,
+        questionNumber: nextNum,
+        totalQuestions: state.maxQuestions,
+      })
+    );
+
+    if (consolidated?.evaluation?.isQuit) return { ...state, mode: 'quit', is_complete: true };
+
+    if (consolidated?.evaluation?.isRepeatRequest) {
+      log.info(`Chapter interaction Q${nextNum} - Repeat Request`);
+      return {
+        ...state,
+        currentQuestion: consolidated.nextQuestion || lastQ?.question,
+        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: consolidated.nextQuestion || lastQ?.question }],
+      };
+    }
+
+    const evalResult = consolidated?.evaluation || { score: 7, feedback: 'Acknowledged.' };
+    const newScore = updateScore(state.runningScore, evalResult.score || 7, nextNum);
+    const newDifficulty = adaptDifficulty(state.difficultyLevel, newScore);
+    const nextQ = consolidated?.nextQuestion || `Let's continue with ${chapterTitle}.`;
+    const nextTopic = consolidated?.nextTopic || `Topic-${nextNum}`;
+
+    return {
+      ...state,
+      evaluation: evalResult,
+      runningScore: newScore,
+      difficultyLevel: newDifficulty,
+      currentQuestion: nextQ,
+      questionCount: nextNum,
+      coveredTopics: [...state.coveredTopics, nextTopic],
+      answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
+      questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: consolidated?.nextExpectedConcepts || [], difficulty: newDifficulty }],
+      transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
+      is_complete: !!(consolidated?.is_complete || nextNum >= state.maxQuestions),
+    };
+  }
+
+  // ── GENERIC INTERVIEW MODE (unchanged) ─────────────────────────────
   // Phase 1: Processing Intro Question (Tell me about yourself)
   if (state.isIntroQuestion) {
     log.info('Processing Intro Answer...');
@@ -172,6 +270,15 @@ const evaluateAnswerNode = async (state) => {
     return { ...state, mode: 'quit', is_complete: true };
   }
 
+  if (consolidated?.evaluation?.isRepeatRequest) {
+    log.info(`Generic interaction Q${nextNum} - Repeat Request`);
+    return {
+      ...state,
+      currentQuestion: consolidated.nextQuestion || lastQ?.question,
+      transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: consolidated.nextQuestion || lastQ?.question }],
+    };
+  }
+
   const evalResult = consolidated?.evaluation || { score: 7, feedback: "Acknowledged." };
   const newScore = updateScore(state.runningScore, evalResult.score || 7, nextNum);
   const newDifficulty = adaptDifficulty(state.difficultyLevel, newScore);
@@ -214,8 +321,52 @@ const evaluateAnswerNode = async (state) => {
 };
 
 // ── NODE: generate_question ───────────────────────────────────────────────────
-// Only for Q0 (Start) and Q1 (Transition)
 const generateQuestionNode = async (state) => {
+  // ── CHAPTER INTERVIEW MODE ────────────────────────────────────────
+  if (state.interviewMode === 'chapter') {
+    const chapterTitle = state.chapterTitle || state.jobRole;
+    const adminPrompt = state.customPrompt || `Ask questions about ${chapterTitle}`;
+
+    // First question: use chapter introduction prompt
+    if (state.isIntroQuestion) {
+      const intro = await aiService.generateCompletion(
+        chapterPrompts.CHAPTER_INTRODUCTION(chapterTitle, adminPrompt)
+      );
+      const text = intro?.text || `Hi! Let's review ${chapterTitle}. To start, can you explain the core concepts?`;
+      return {
+        ...state,
+        currentQuestion: text,
+        questionHistory: [{ question: text, topic: 'Introduction', type: 'intro' }],
+        transcript: [...state.transcript, { role: 'interviewer', text }],
+      };
+    }
+
+    // Subsequent questions: use chapter generate prompt
+    const q = await aiService.generateCompletion(
+      chapterPrompts.CHAPTER_GENERATE_QUESTION(
+        chapterTitle, adminPrompt, state.coveredTopics,
+        state.questionCount, state.maxQuestions, state.difficultyLevel
+      )
+    );
+    const text = q?.text || `Can you tell me more about a key concept in ${chapterTitle}?`;
+    return {
+      ...state,
+      currentQuestion: text,
+      questionCount: state.questionCount + 1,
+      backgroundQuestionCount: 0,
+      coveredTopics: [...state.coveredTopics, q?.topic || 'Concept'],
+      questionHistory: [...state.questionHistory, {
+        question: text,
+        topic: q?.topic || 'Concept',
+        type: 'main',
+        expectedConcepts: q?.expectedConcepts || [],
+        difficulty: state.difficultyLevel
+      }],
+      transcript: [...state.transcript, { role: 'interviewer', text }],
+    };
+  }
+
+  // ── GENERIC INTERVIEW MODE (unchanged) ─────────────────────────────
   if (state.isIntroQuestion) {
     const intro = await aiService.generateCompletion(prompts.INTRODUCTION(state.jobRole, state.candidateProfile));
     const text = intro?.text || "Hi! I'm your interviewer today. Tell me a bit about yourself.";
@@ -271,8 +422,21 @@ const generateQuestionNode = async (state) => {
 
 // ── NODE: end_interview ────────────────────────────────────────────────────────
 const endInterviewNode = async (state) => {
-  const report = await aiService.generateCompletion(prompts.FINAL_EVALUATION(state.jobRole, state.interviewType, state.answerHistory.filter(a => a.type === 'technical'), state.cheatingEvents, state.difficultyLevel));
-  const closingText = `Thank you so much! I've prepared your evaluation report.`;
+  let report;
+  if (state.interviewMode === 'chapter') {
+    const chapterTitle = state.chapterTitle || state.jobRole;
+    const adminPrompt = state.customPrompt || `Chapter review of ${chapterTitle}`;
+    report = await aiService.generateCompletion(
+      chapterPrompts.CHAPTER_FINAL_EVALUATION(chapterTitle, adminPrompt, state.answerHistory.filter(a => a.type === 'technical'))
+    );
+  } else {
+    report = await aiService.generateCompletion(
+      prompts.FINAL_EVALUATION(state.jobRole, state.interviewType, state.answerHistory.filter(a => a.type === 'technical'), state.cheatingEvents, state.difficultyLevel)
+    );
+  }
+  const closingText = state.interviewMode === 'chapter'
+    ? `Great work! I've completed your chapter assessment for ${state.chapterTitle || state.jobRole}. Your report is ready.`
+    : `Thank you so much! I've prepared your evaluation report.`;
   return {
     ...state,
     evaluation: report,
@@ -292,13 +456,20 @@ const quitConfirmationNode = async (state) => {
 const silenceNudgeNode = async (state) => {
   const lastQ = state.questionHistory.slice(-1)[0]?.question || "How are things going on your end?";
   log.node('silence_nudge', `Nudging after 30s silence...`);
-  
-  const nudge = await aiService.generateCompletion(
-    prompts.SILENCE_NUDGE(state.jobRole, lastQ, state.candidateContext)
-  );
+
+  let nudge;
+  if (state.interviewMode === 'chapter') {
+    nudge = await aiService.generateCompletion(
+      chapterPrompts.CHAPTER_SILENCE_NUDGE(state.chapterTitle || state.jobRole, lastQ)
+    );
+  } else {
+    nudge = await aiService.generateCompletion(
+      prompts.SILENCE_NUDGE(state.jobRole, lastQ, state.candidateContext)
+    );
+  }
 
   const text = nudge?.text || "No rush, take your time... just let me know if you need any clarification on the question.";
-  
+
   return {
     ...state,
     currentQuestion: text,
@@ -306,9 +477,15 @@ const silenceNudgeNode = async (state) => {
   };
 };
 
-// ── Routing ───────────────────────────────────────────────────────────────────
+// ── Routing ────────────────────────────────────────────────────────────────────
 const routeAfterEvaluate = (state) => {
-  // Stay in discovery phase if background count is active
+  // Chapter mode: no background discovery phase, always go straight to next Q or end
+  if (state.interviewMode === 'chapter') {
+    if (state.questionCount >= state.maxQuestions || state.is_complete) return 'end_interview';
+    return 'ask_question';
+  }
+
+  // Generic mode: stay in discovery phase if background count is active
   if (state.backgroundQuestionCount > 0 && state.backgroundQuestionCount < 4) return 'generate_question';
   
   if (state.questionCount === 0 && !state.isIntroQuestion) return 'generate_question';

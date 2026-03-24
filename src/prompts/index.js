@@ -216,8 +216,9 @@ ${JSON.stringify(codeContext.testResults)}
 ${coveredList}
 
 **INSTRUCTION:**
-1. **EVALUATE:** Score the candidate's answer 0-10 for technical depth and accuracy.
-2. **ACTIVE LISTENING:** Start \`nextQuestion\` by briefly reacting to their answer (1-2 words: "Good point," / "Interesting," / "I see..."). Keep this natural and varied.
+1. **EVALUATE:** Score the candidate's answer 0-10 for technical depth and accuracy. 
+   - IMPORTANT: If the candidate simply asks you to repeat, rephrase, or clarify the question (e.g., "Can you say that again?", "What did you mean?"), set \`isRepeatRequest\` to true inside evaluation and do not penalize their score.
+2. **ACTIVE LISTENING:** Start \`nextQuestion\` by briefly reacting to their answer (1-2 words: "Good point," / "Interesting," / "I see..."). Keep this natural and varied. If \`isRepeatRequest\` is true, just say "Sure! I was asking..." and rephrase the last question.
 3. **NEXT QUESTION — STRICT TOPIC DIVERSITY RULE:**
    ${codeContext
      ? `**CRITICAL CODING COMPANION RULE:** The candidate is looking at a live editor. Your \`nextQuestion\` MUST reference their actual code. Give a gentle hint if tests fail, point out a specific line flaw, or say "Looks good, let's run the tests."`
@@ -249,6 +250,7 @@ Return ONLY valid JSON — no explanation, no markdown wrapping:
   "evaluation": {
     "score": <0-10>,
     "isQuit": false,
+    "isRepeatRequest": false,
     "isQuestioningRelevance": false,
     "feedback": "Internal technical note",
     "conceptsMissing": [],

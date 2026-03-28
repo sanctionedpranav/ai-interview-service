@@ -189,11 +189,14 @@ const evaluateAnswerNode = async (state) => {
     if (consolidated?.evaluation?.isQuit) return { ...state, mode: 'quit', is_complete: true };
 
     if (consolidated?.evaluation?.isRepeatRequest) {
-      log.info(`Chapter interaction Q${nextNum} - Repeat Request`);
+      log.info(`Chapter interaction Q${nextNum} - Repeat Request — replaying exact previous question`);
+      // Always use the exact previous question from state — never trust LLM's nextQuestion on repeat
+      const repeatedQ = lastQ?.question || `Can you tell me more about ${chapterTitle}?`;
       return {
         ...state,
-        currentQuestion: consolidated.nextQuestion || lastQ?.question,
-        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: consolidated.nextQuestion || lastQ?.question }],
+        // Do NOT advance questionCount, coveredTopics, answerHistory, or questionHistory
+        currentQuestion: repeatedQ,
+        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: repeatedQ }],
       };
     }
 
@@ -238,6 +241,20 @@ const evaluateAnswerNode = async (state) => {
   // Phase 1.5: Processing Background Discovery Follow-ups
   if (state.backgroundQuestionCount > 0 && state.backgroundQuestionCount < 3) {
     log.info(`Processing Background Follow-up ${state.backgroundQuestionCount}...`);
+
+    // Detect repeat requests BEFORE advancing the counter
+    const repeatPattern = /\b(repeat|say that again|didn'?t understand|didn'?t get|rephrase|what (was|were|did you) (you |the )?ask|could you repeat|please repeat|say it again|come again|pardon|huh\??)\b/i;
+    if (repeatPattern.test(answer.trim())) {
+      log.info(`Background Follow-up - Repeat Request detected — replaying exact previous question`);
+      const repeatedQ = lastQ?.question || 'Could you answer the previous question?';
+      return {
+        ...state,
+        // Do NOT advance backgroundQuestionCount or push to answerHistory
+        currentQuestion: repeatedQ,
+        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: repeatedQ }],
+      };
+    }
+
     // Note: We don't score these technically, just build context
     return {
       ...state,
@@ -245,6 +262,7 @@ const evaluateAnswerNode = async (state) => {
       answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: 7, type: 'background' }],
       transcript: [...state.transcript, { role: 'candidate', text: answer }],
     };
+
   }
 
   // Phase 2: Consolidated Technical Interaction (Evaluation + Next Q)
@@ -271,11 +289,14 @@ const evaluateAnswerNode = async (state) => {
   }
 
   if (consolidated?.evaluation?.isRepeatRequest) {
-    log.info(`Generic interaction Q${nextNum} - Repeat Request`);
+    log.info(`Generic interaction Q${nextNum} - Repeat Request — replaying exact previous question`);
+    // Always use the exact previous question from state — never trust LLM's nextQuestion on repeat
+    const repeatedQ = lastQ?.question || 'Could you answer the previous question?';
     return {
       ...state,
-      currentQuestion: consolidated.nextQuestion || lastQ?.question,
-      transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: consolidated.nextQuestion || lastQ?.question }],
+      // Do NOT advance questionCount, coveredTopics, answerHistory, or questionHistory
+      currentQuestion: repeatedQ,
+      transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: repeatedQ }],
     };
   }
 

@@ -104,11 +104,12 @@ ${coveredList}
    - 5-7: Partially correct, some gaps
    - 0-4: Incorrect or very shallow
    - REPEAT REQUEST DETECTION: If the student says anything resembling "repeat the question", "say that again", "I didn't understand", "can you rephrase", "what was the question", "could you repeat", "please repeat", "I didn't get that", or any similar intent — set \`isRepeatRequest\` to true and do NOT score negatively (score stays 0, feedback as "Repeat requested").
-2. **RESPOND:** Start nextQuestion with a brief, natural acknowledgment (1-2 words: "Good!", "Exactly.", "Interesting.") keeping it varied.
-   - **REPEAT REQUEST RULE (CRITICAL):** If \`isRepeatRequest\` is true, your \`nextQuestion\` MUST start with "No problem! " and then repeat the EXACT previous question word-for-word: "${lastQuestion}". You may simplify slightly only if it was complex, but the topic MUST remain identical. Do NOT generate a new question.
-3. **NEXT QUESTION (only when NOT a repeat request):** Generate a new question strictly within "${chapterTitle}" scope, covering a NEW sub-topic.
+2. **ACTIVE LISTENING & CONFIRMATION:** Your \`nextQuestion\` string MUST start with a natural, expressive acknowledgment of their specific answer (e.g., "Wow, exactly! Using a Linked List here is a great call," or "Hmm, I see where you're going with the Big O part, though we missed the space complexity...").
+   - **VERDICT:** You MUST explicitly tell the student if they were correct, partially correct, or if they missed a key concept BEFORE transitioning to the next question.
+   - **REPEAT REQUEST RULE (CRITICAL):** If \`isRepeatRequest\` is true, your \`nextQuestion\` MUST start with "No problem! " and then repeat the EXACT previous question word-for-word: "${lastQuestion}". Do NOT generate a new question.
+3. **NEXT QUESTION (only when NOT a repeat request):** Generate a new question strictly within "${chapterTitle}" scope, covering a NEW sub-topic. Use a natural, conversational flow. Incorporate natural pauses ("...") and fillers ("So,", "Well,") to make it feel less like a bot.
    - MUST be different from all covered topics above.
-   - Keep it concise and clear.
+   - Keep it concise and clear. Use the "Acknowledge -> Confirm -> Transition" sandwich.
 4. **COMPLETION CHECK:** Set is_complete to true ONLY when questionNumber >= totalQuestions (${totalQuestions}).
 
 **FORMATTING:**

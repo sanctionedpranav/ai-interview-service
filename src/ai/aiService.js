@@ -1,10 +1,27 @@
 import Groq from 'groq-sdk';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { config } from '../config/index.js';
 import { log } from '../utils/logger.js';
 
-const groq = new Groq({ apiKey: config.groqApiKey });
-const genAI = new GoogleGenerativeAI(config.geminiApiKey);
+// ── Key validity check ───────────────────────────────────────────────────────
+const isPlaceholder = (key) =>
+  !key ||
+  key.trim() === '' ||
+  key.startsWith('your_') ||
+  key.startsWith('YOUR_') ||
+  key === 'GROQ_API_KEY' ||
+  key === 'GEMINI_API_KEY';
+
+// Lazily initialized clients to prevent top-level crashes if keys are missing
+let groq = null;
+const getGroqClient = () => {
+  if (!groq && !isPlaceholder(config.groqApiKey)) {
+    groq = new Groq({ apiKey: config.groqApiKey });
+  }
+  return groq;
+};
+
+export const genAI = !isPlaceholder(config.geminiApiKey) ? new GoogleGenAI({ apiKey: config.geminiApiKey }) : null;
 
 /**
  * Validates the AI response based on required JSON fields and length.
@@ -223,14 +240,7 @@ const getMockResponse = (prompt) => {
   return { text: "Thank you for your response. Let's continue.", stage: "UNKNOWN" };
 };
 
-// ── Key validity check ───────────────────────────────────────────────────────
-const isPlaceholder = (key) =>
-  !key ||
-  key.trim() === '' ||
-  key.startsWith('your_') ||
-  key.startsWith('YOUR_') ||
-  key === 'GROQ_API_KEY' ||
-  key === 'GEMINI_API_KEY';
+
 
 const groqReady = !isPlaceholder(config.groqApiKey);
 const geminiReady = !isPlaceholder(config.geminiApiKey);
@@ -254,31 +264,36 @@ export const aiService = {
       return getMockResponse(prompt);
     }
 
-    // ── Try Gemini (Primary) ────────────────────────────────────────────────
-    if (geminiReady) {
+    // ── Try Gemini (Primary - Cost-Effective 2.5 Flash) ────────────────────
+    if (genAI) {
       try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
+        const result = await genAI.models.generateContent({
+          model: 'gemini-2.5-flash-lite',
+          contents: [{ role: 'user', parts: [{ text: prompt }] }]
+        });
+        
+        const text = result.text;
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         const cleanedText = jsonMatch ? jsonMatch[0] : text;
 
         if (validateResponse(cleanedText)) {
-          log.success('Gemini → response OK');
+          log.success('Gemini 2.5 Flash (Primary) → response OK');
           return extractCleanJSON(cleanedText);
         }
-        log.warn('Gemini response invalid/empty — trying Groq...');
+        log.warn('Gemini response invalid/empty — trying Groq fallback...');
       } catch (geminiError) {
-        log.warn(`Gemini: ${geminiError.message} — trying Groq...`);
+        log.warn(`Gemini Error: ${geminiError.message} — trying Groq fallback...`);
       }
     }
 
     // ── Try Groq (Fallback) ──────────────────────────────────────────────────
     if (groqReady) {
       try {
-        const groqResponse = await groq.chat.completions.create({
+        const client = getGroqClient();
+        if (!client) throw new Error('Groq client not initialized');
+
+        const groqResponse = await client.chat.completions.create({
           messages: [{ role: 'user', content: prompt }],
           model: options.model || 'llama-3.3-70b-versatile',
           response_format: { type: 'json_object' },
@@ -287,13 +302,13 @@ export const aiService = {
         const content = groqResponse.choices[0]?.message?.content;
 
         if (content && validateResponse(content)) {
-          log.success('Groq (llama3-70b/fallback) → response OK');
+          log.success('Groq Llama 3.3 70B (Fallback) → response OK');
           return extractCleanJSON(content);
         }
 
         console.log('❌ Invalid or empty Groq content:', content);
       } catch (error) {
-        log.warn(`Groq Fallback: ${error.message}`);
+        log.warn(`Groq Fallback Error: ${error.message}`);
       }
     }
 

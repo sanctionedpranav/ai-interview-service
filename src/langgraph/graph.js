@@ -74,6 +74,10 @@ const STATE_CHANNELS = {
   cheatingEvents: { value: merge, default: () => [] },
   transcript: { value: merge, default: () => [] },
 
+  // Off-topic violation tracking
+  // 0 = no violations yet, 1 = warning issued, 2+ = terminate
+  offTopicWarningCount: { value: merge, default: () => 0 },
+
   // outputs
   currentQuestion: { value: merge, default: () => '' },
   transcript_text: { value: merge, default: () => '' },
@@ -134,6 +138,17 @@ const evaluateAnswerNode = async (state) => {
 
     // Skip background discovery for chapter mode — go straight to chapter evaluation
     if (state.isIntroQuestion) {
+      const repeatPattern = /\b(repeat|say that again|didn'?t understand|didn'?t get|rephrase|what (was|were|did you) (you |the )?ask|could you repeat|please repeat|say it again|come again|pardon|huh\??)\b/i;
+      if (repeatPattern.test(answer.trim())) {
+        log.info(`Chapter Intro Question - Repeat Request detected`);
+        const repeatedQ = lastQ?.question || `Can you tell me more about ${chapterTitle}?`;
+        return {
+          ...state,
+          currentQuestion: `Oh, yeah sure! I was asking: ${repeatedQ}`,
+          transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: `Oh, yeah sure! I was asking: ${repeatedQ}` }],
+        };
+      }
+
       // Even the first "intro" answer goes through chapter evaluation
       const result = await aiService.generateCompletion(
         chapterPrompts.CHAPTER_CONSOLIDATED_INTERACTION({
@@ -150,6 +165,20 @@ const evaluateAnswerNode = async (state) => {
       );
 
       if (result?.evaluation?.isQuit) return { ...state, mode: 'quit', is_complete: true };
+
+      // ── OFF-TOPIC DETECTION ───────────────────────────────────────────────────────
+      if (result?.evaluation?.isOffTopic) {
+        const severity = result.evaluation.offTopicSeverity;
+        const warningCount = state.offTopicWarningCount || 0;
+        if (severity === 'terminate' || warningCount >= 1) {
+          log.warn(`Chapter Off-topic termination: ${state.sessionId}`);
+          const msg = result.nextQuestion || 'Session ended due to repeated off-topic responses.';
+          return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, is_complete: true, mode: 'quit', transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
+        }
+        log.warn(`Chapter Off-topic warning #${warningCount + 1}: ${state.sessionId}`);
+        const msg = result.nextQuestion || `Please stay focused on ${chapterTitle}.`;
+        return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
+      }
 
       const evalResult = result?.evaluation || { score: 7, feedback: 'Acknowledged.' };
       const nextQ = result?.nextQuestion || `Can you tell me more about ${chapterTitle}?`;
@@ -188,10 +217,24 @@ const evaluateAnswerNode = async (state) => {
 
     if (consolidated?.evaluation?.isQuit) return { ...state, mode: 'quit', is_complete: true };
 
+    // ── OFF-TOPIC DETECTION ───────────────────────────────────────────────────────
+    if (consolidated?.evaluation?.isOffTopic) {
+      const severity = consolidated.evaluation.offTopicSeverity;
+      const warningCount = state.offTopicWarningCount || 0;
+      if (severity === 'terminate' || warningCount >= 1) {
+        log.warn(`Chapter Off-topic termination: ${state.sessionId}`);
+        const msg = consolidated.nextQuestion || 'Session ended due to repeated off-topic responses.';
+        return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, is_complete: true, mode: 'quit', transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
+      }
+      log.warn(`Chapter Off-topic warning #${warningCount + 1}: ${state.sessionId}`);
+      const msg = consolidated.nextQuestion || `Please stay focused on ${chapterTitle}.`;
+      return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
+    }
+
     if (consolidated?.evaluation?.isRepeatRequest) {
-      log.info(`Chapter interaction Q${nextNum} - Repeat Request — replaying exact previous question`);
-      // Always use the exact previous question from state — never trust LLM's nextQuestion on repeat
-      const repeatedQ = lastQ?.question || `Can you tell me more about ${chapterTitle}?`;
+      log.info(`Chapter interaction Q${nextNum} - Repeat Request detected`);
+      // Use the LLM's naturally rephrased question
+      const repeatedQ = consolidated.nextQuestion || lastQ?.question || `Can you tell me more about ${chapterTitle}?`;
       return {
         ...state,
         // Do NOT advance questionCount, coveredTopics, answerHistory, or questionHistory
@@ -224,6 +267,17 @@ const evaluateAnswerNode = async (state) => {
   // ── GENERIC INTERVIEW MODE (unchanged) ─────────────────────────────
   // Phase 1: Processing Intro Question (Tell me about yourself)
   if (state.isIntroQuestion) {
+    const repeatPattern = /\b(repeat|say that again|didn'?t understand|didn'?t get|rephrase|what (was|were|did you) (you |the )?ask|could you repeat|please repeat|say it again|come again|pardon|huh\??)\b/i;
+    if (repeatPattern.test(answer.trim())) {
+      log.info(`Intro Question - Repeat Request detected`);
+      const repeatedQ = lastQ?.question || "I was asking, could you tell me a bit about your technical background?";
+      return {
+        ...state,
+        currentQuestion: `Oh, sure. I said: ${repeatedQ}`,
+        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: `Oh, sure. I said: ${repeatedQ}` }],
+      };
+    }
+
     log.info('Processing Intro Answer...');
     const ctx = await aiService.generateCompletion(
       prompts.EXTRACT_CANDIDATE_CONTEXT(state.jobRole, answer)
@@ -245,13 +299,13 @@ const evaluateAnswerNode = async (state) => {
     // Detect repeat requests BEFORE advancing the counter
     const repeatPattern = /\b(repeat|say that again|didn'?t understand|didn'?t get|rephrase|what (was|were|did you) (you |the )?ask|could you repeat|please repeat|say it again|come again|pardon|huh\??)\b/i;
     if (repeatPattern.test(answer.trim())) {
-      log.info(`Background Follow-up - Repeat Request detected — replaying exact previous question`);
+      log.info(`Background Follow-up - Repeat Request detected`);
       const repeatedQ = lastQ?.question || 'Could you answer the previous question?';
       return {
         ...state,
         // Do NOT advance backgroundQuestionCount or push to answerHistory
-        currentQuestion: repeatedQ,
-        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: repeatedQ }],
+        currentQuestion: `Oh, sure. Basically I was asking: ${repeatedQ}`,
+        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: `Oh, sure. Basically I was asking: ${repeatedQ}` }],
       };
     }
 
@@ -288,10 +342,41 @@ const evaluateAnswerNode = async (state) => {
     return { ...state, mode: 'quit', is_complete: true };
   }
 
+  // ── OFF-TOPIC DETECTION ───────────────────────────────────────────────────────
+  if (consolidated?.evaluation?.isOffTopic) {
+    const severity = consolidated.evaluation.offTopicSeverity;
+    const warningCount = state.offTopicWarningCount || 0;
+
+    if (severity === 'terminate' || warningCount >= 1) {
+      // Second offense → terminate immediately
+      log.warn(`Off-topic termination for session: ${state.sessionId}`);
+      const terminationMsg = consolidated.nextQuestion || 'This interview has been ended due to repeated off-topic responses.';
+      return {
+        ...state,
+        currentQuestion: terminationMsg,
+        offTopicWarningCount: warningCount + 1,
+        is_complete: true,
+        mode: 'quit',
+        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: terminationMsg }],
+      };
+    }
+
+    // First offense → issue warning, re-ask the same question
+    log.warn(`Off-topic warning #${warningCount + 1} for session: ${state.sessionId}`);
+    const warningMsg = consolidated.nextQuestion || `Please stay focused on the ${state.jobRole} interview topics.`;
+    return {
+      ...state,
+      currentQuestion: warningMsg,
+      offTopicWarningCount: warningCount + 1,
+      // Do NOT advance questionCount, coveredTopics, or history
+      transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: warningMsg }],
+    };
+  }
+
   if (consolidated?.evaluation?.isRepeatRequest) {
-    log.info(`Generic interaction Q${nextNum} - Repeat Request — replaying exact previous question`);
-    // Always use the exact previous question from state — never trust LLM's nextQuestion on repeat
-    const repeatedQ = lastQ?.question || 'Could you answer the previous question?';
+    log.info(`Generic interaction Q${nextNum} - Repeat Request detected`);
+    // Trust LLM's rephrased question
+    const repeatedQ = consolidated.nextQuestion || lastQ?.question || 'Could you answer the previous question?';
     return {
       ...state,
       // Do NOT advance questionCount, coveredTopics, answerHistory, or questionHistory

@@ -33,6 +33,9 @@ const InterviewSessionSchema = new mongoose.Schema({
   maxQuestions: { type: Number, default: 8 },
   // Number of background Q&A turns completed
   backgroundQuestionCount: { type: Number, default: 0 },
+  // Number of times the student gave a completely irrelevant/off-topic answer
+  // First offense → warning is issued. Second offense → interview terminated.
+  offTopicWarningCount: { type: Number, default: 0 },
 
   interviewStage: {
     type: String,

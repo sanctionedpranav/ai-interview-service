@@ -59,6 +59,7 @@ const sessionToState = (session, overrides = {}) => ({
     silence_detected: false,
     error: null,
     backgroundQuestionCount: session.backgroundQuestionCount || 0,
+    offTopicWarningCount: session.offTopicWarningCount || 0,
     ...overrides,
 });
 
@@ -75,6 +76,7 @@ const persist = async (session, out) => {
     if (out.transcript) session.transcript = out.transcript;
     if (out.coveredTopics) session.coveredTopics = out.coveredTopics;
     if (out.backgroundQuestionCount !== undefined) session.backgroundQuestionCount = out.backgroundQuestionCount;
+    if (out.offTopicWarningCount !== undefined) session.offTopicWarningCount = out.offTopicWarningCount;
     if (out.is_complete) {
         session.interviewStage = 'FINAL_EVALUATION';
         session.endTime = new Date();
@@ -128,6 +130,7 @@ export const startInterview = async (req, res) => {
             lectureId,
             chapterTitle: chapterTitle || jobRole,
             courseTitle,
+            offTopicWarningCount: 0,
         });
 
         log.info(`Starting session: ${sessionId} | ${jobRole} | mode: ${interviewMode}`);
@@ -226,7 +229,12 @@ export const processAudio = async (req, res) => {
 
         try {
             const { sttService } = await import('../speech/stt.js');
-            transcribedText = await sttService.transcribe(audioFile.path);
+            
+            // Biasing the Whisper STT with a technical prompt to reduce hallucination and fix jargon/accent recognition
+            const sttPrompt = `Technical software engineering interview for ${session.jobRole || 'developer'}. Topics: programming, system design, frontend, backend, API, React, Node.js, Javascript, databases, scalability, cloud, AWS, UI, UX, algorithms, data structures. Includes candidate answering questions naturally.`;
+            
+            transcribedText = await sttService.transcribe(audioFile.path, { prompt: sttPrompt });
+            
             log.sttResult(transcribedText);
         } catch (e) {
             log.sttFallback(e.message);

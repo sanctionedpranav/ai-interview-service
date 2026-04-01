@@ -36,6 +36,8 @@ const InterviewSessionSchema = new mongoose.Schema({
   // Number of times the student gave a completely irrelevant/off-topic answer
   // First offense → warning is issued. Second offense → interview terminated.
   offTopicWarningCount: { type: Number, default: 0 },
+  // Number of times the AI had to nudge the student for being silent. 3 violations = terminate.
+  silenceViolationCount: { type: Number, default: 0 },
 
   interviewStage: {
     type: String,

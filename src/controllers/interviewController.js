@@ -60,6 +60,7 @@ const sessionToState = (session, overrides = {}) => ({
     error: null,
     backgroundQuestionCount: session.backgroundQuestionCount || 0,
     offTopicWarningCount: session.offTopicWarningCount || 0,
+    silenceViolationCount: session.silenceViolationCount || 0,
     ...overrides,
 });
 
@@ -77,6 +78,7 @@ const persist = async (session, out) => {
     if (out.coveredTopics) session.coveredTopics = out.coveredTopics;
     if (out.backgroundQuestionCount !== undefined) session.backgroundQuestionCount = out.backgroundQuestionCount;
     if (out.offTopicWarningCount !== undefined) session.offTopicWarningCount = out.offTopicWarningCount;
+    if (out.silenceViolationCount !== undefined) session.silenceViolationCount = out.silenceViolationCount;
     if (out.is_complete) {
         session.interviewStage = 'FINAL_EVALUATION';
         session.endTime = new Date();
@@ -131,6 +133,7 @@ export const startInterview = async (req, res) => {
             chapterTitle: chapterTitle || jobRole,
             courseTitle,
             offTopicWarningCount: 0,
+            silenceViolationCount: 0,
         });
 
         log.info(`Starting session: ${sessionId} | ${jobRole} | mode: ${interviewMode}`);
@@ -305,6 +308,7 @@ export const handleSilence = async (req, res) => {
         return res.json({
             nextQuestion: out.currentQuestion,
             audioUrl: out.audio_url,
+            isComplete: out.is_complete,
         });
     } catch (err) {
         log.error('handleSilence', err);

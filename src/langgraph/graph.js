@@ -77,6 +77,8 @@ const STATE_CHANNELS = {
   // Off-topic violation tracking
   // 0 = no violations yet, 1 = warning issued, 2+ = terminate
   offTopicWarningCount: { value: merge, default: () => 0 },
+  // Silence tracking
+  silenceViolationCount: { value: merge, default: () => 0 },
 
   // outputs
   currentQuestion: { value: merge, default: () => '' },
@@ -195,7 +197,7 @@ const evaluateAnswerNode = async (state) => {
         answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
         questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: result?.nextExpectedConcepts || [], difficulty: state.difficultyLevel }],
         transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
-        is_complete: !!(result?.is_complete || 1 >= state.maxQuestions),
+        is_complete: !!(1 >= state.maxQuestions),
       };
     }
 
@@ -260,7 +262,7 @@ const evaluateAnswerNode = async (state) => {
       answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
       questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: consolidated?.nextExpectedConcepts || [], difficulty: newDifficulty }],
       transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
-      is_complete: !!(consolidated?.is_complete || nextNum >= state.maxQuestions),
+      is_complete: !!(nextNum >= state.maxQuestions),
     };
   }
 
@@ -422,7 +424,7 @@ const evaluateAnswerNode = async (state) => {
       { role: 'candidate', text: answer },
       { role: 'interviewer', text: nextQ }
     ],
-    is_complete: !!(consolidated?.is_complete || nextNum >= state.maxQuestions),
+    is_complete: !!(nextNum >= state.maxQuestions),
   };
 };
 
@@ -560,8 +562,21 @@ const quitConfirmationNode = async (state) => {
 
 // ── NODE: silence_nudge ────────────────────────────────────────────────────────
 const silenceNudgeNode = async (state) => {
+  const newSilentCount = state.silenceViolationCount + 1;
   const lastQ = state.questionHistory.slice(-1)[0]?.question || "How are things going on your end?";
-  log.node('silence_nudge', `Nudging after 30s silence...`);
+  log.node('silence_nudge', `Nudging after 30s silence... Violation ${newSilentCount}`);
+
+  if (newSilentCount >= 3) {
+      log.info(`Silence limits exceeded (${newSilentCount}), terminating interview session.`);
+      const termMsg = "I haven't heard from you in a while, so I'm going to wrap up the interview here. Thanks for your time.";
+      return {
+          ...state,
+          silenceViolationCount: newSilentCount,
+          currentQuestion: termMsg,
+          is_complete: true,
+          transcript: [...state.transcript, { role: 'interviewer', text: termMsg }]
+      };
+  }
 
   let nudge;
   if (state.interviewMode === 'chapter') {
@@ -578,6 +593,7 @@ const silenceNudgeNode = async (state) => {
 
   return {
     ...state,
+    silenceViolationCount: newSilentCount,
     currentQuestion: text,
     transcript: [...state.transcript, { role: 'interviewer', text: text, is_nudge: true }],
   };
@@ -585,9 +601,13 @@ const silenceNudgeNode = async (state) => {
 
 // ── Routing ────────────────────────────────────────────────────────────────────
 const routeAfterEvaluate = (state) => {
+  // Always intercept completion flag first
+  if (state.is_complete || state.questionCount >= state.maxQuestions) {
+    return 'end_interview';
+  }
+
   // Chapter mode: no background discovery phase, always go straight to next Q or end
   if (state.interviewMode === 'chapter') {
-    if (state.questionCount >= state.maxQuestions || state.is_complete) return 'end_interview';
     return 'ask_question';
   }
 
@@ -595,7 +615,7 @@ const routeAfterEvaluate = (state) => {
   if (state.backgroundQuestionCount > 0 && state.backgroundQuestionCount < 4) return 'generate_question';
   
   if (state.questionCount === 0 && !state.isIntroQuestion) return 'generate_question';
-  if (state.questionCount >= state.maxQuestions) return 'end_interview';
+  
   return 'ask_question';
 };
 

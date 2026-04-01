@@ -284,12 +284,15 @@ const evaluateAnswerNode = async (state) => {
     const ctx = await aiService.generateCompletion(
       prompts.EXTRACT_CANDIDATE_CONTEXT(state.jobRole, answer)
     );
+    // Merge toneHint from extraction into candidateContext for downstream prompts
+    const enrichedCtx = ctx ? { ...ctx, toneHint: ctx.toneHint || 'confident_and_technical' } : null;
+    log.info(`📋 Candidate context extracted. Tone: ${enrichedCtx?.toneHint}, Level: ${enrichedCtx?.candidateLevel}`);
     return {
       ...state,
-      candidateContext: ctx,
+      candidateContext: enrichedCtx,
       isIntroQuestion: false,
       backgroundQuestionCount: 1,
-      answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: 7, type: 'intro', feedback: "Personal introduction" }],
+      answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: 7, type: 'intro', feedback: 'Personal introduction' }],
       transcript: [...state.transcript, { role: 'candidate', text: answer }],
     };
   }
@@ -387,15 +390,46 @@ const evaluateAnswerNode = async (state) => {
     };
   }
 
-  const evalResult = consolidated?.evaluation || { score: 7, feedback: "Acknowledged." };
+  let evalResult = consolidated?.evaluation || { score: 7, feedback: 'Acknowledged.' };
   const newScore = updateScore(state.runningScore, evalResult.score || 7, nextNum);
   const newDifficulty = adaptDifficulty(state.difficultyLevel, newScore);
-  const nextQ = consolidated?.nextQuestion || "Shall we move on to the next topic?";
+  let nextQ = consolidated?.nextQuestion || 'Shall we move on to the next topic?';
   // Always record whatever topic the LLM said — never collapse duplicates to 'Fundamentals'.
-  // The prompt enforces diversity; the graph just records it faithfully.
   const nextTopic = consolidated?.nextTopic || `Topic-${nextNum}`;
 
-  log.evaluateResult(evalResult.score || 7, evalResult.rating || "Good", evalResult.needsFollowup, newDifficulty);
+  log.evaluateResult(evalResult.score || 7, evalResult.rating || 'Good', evalResult.needsFollowup, newDifficulty);
+
+  // ── EMOTIONAL RECOVERY: candidate is clearly stressed/anxious ───────────
+  if (evalResult.isStressed) {
+    log.info(`😟 Stress detected for session: ${state.sessionId} — triggering emotional recovery`);
+    try {
+      const recovery = await aiService.generateCompletion(
+        prompts.EMOTIONAL_RECOVERY(state.jobRole, lastQ?.question || '', state.candidateContext)
+      );
+      if (recovery?.text) nextQ = recovery.text;
+    } catch (e) {
+      log.warn(`Emotional recovery prompt failed: ${e.message}`);
+    }
+  }
+
+  // ── CHALLENGE FOLLOW-UP: candidate nailed it — go deeper on same topic ──
+  if (!evalResult.isStressed && (evalResult.score || 0) >= 9 && !state.is_complete) {
+    log.info(`🔥 Exceptional answer (score ${evalResult.score}) — triggering challenge follow-up`);
+    try {
+      const challenge = await aiService.generateCompletion(
+        prompts.CHALLENGE_FOLLOW_UP(
+          state.jobRole,
+          lastQ?.question || '',
+          answer,
+          lastQ?.topic || nextTopic,
+          state.candidateContext
+        )
+      );
+      if (challenge?.text) nextQ = challenge.text;
+    } catch (e) {
+      log.warn(`Challenge follow-up prompt failed: ${e.message}`);
+    }
+  }
 
   return {
     ...state,

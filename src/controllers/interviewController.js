@@ -3,7 +3,6 @@ import fs from 'fs';
 import { InterviewSession } from '../models/InterviewSession.js';
 import { log } from '../utils/logger.js';
 import { interviewQueue, interviewQueueEvents } from '../queues/interviewQueue.js';
-import { expandLeetCodeReferences } from '../utils/leetcode.js';
 
 /**
  * Interview Controller
@@ -112,11 +111,6 @@ export const startInterview = async (req, res) => {
             return res.status(400).json({ error: 'customPrompt is required for chapter interviews' });
         }
 
-        // Expand any LeetCode problem references in the prompt so the AI
-        // knows the exact problem title, description, tags, and difficulty.
-        // e.g. "LeetCode 29" → injected full context for Divide Two Integers.
-        const enrichedPrompt = expandLeetCodeReferences(customPrompt);
-
         const sessionId = uuidv4();
         const session = await InterviewSession.create({
             sessionId, userId, jobRole, interviewType,
@@ -134,7 +128,7 @@ export const startInterview = async (req, res) => {
             interviewStage: 'INTRODUCTION',
             // Chapter interview metadata
             interviewMode,
-            customPrompt: enrichedPrompt,   // enriched with LeetCode context if applicable
+            customPrompt,
             lectureId,
             chapterTitle: chapterTitle || jobRole,
             courseTitle,

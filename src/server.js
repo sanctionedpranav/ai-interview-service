@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import cors from 'cors';
 import morgan from 'morgan';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { config } from './config/index.js';
 import interviewRoutes from './routes/interviewRoutes.js';
@@ -82,17 +83,19 @@ app.listen(config.port, async () => {
     console.log('   → Run: npm install && npm run setup');
   }
 
-  // ── Piper TTS ─────────────────────────────────────────────────────────────────
+  // ── TTS Service (Hybrid: Piper + Gemini) ──────────────────────────────────────
   try {
     const { ttsService } = await import('./speech/tts.js');
     if (ttsService.isAvailable()) {
-      log.success('Piper TTS: binary found and ready');
+      const hasPiper = fs.existsSync(path.join(__dirname, '../bin/piper/piper'));
+      const hasGemini = config.geminiApiKey;
+      log.success(`TTS Ready: ${hasPiper ? 'Piper (Local)' : ''}${hasPiper && hasGemini ? ' + ' : ''}${hasGemini ? 'Gemini (Cloud)' : ''}`);
       setInterval(() => ttsService.cleanup(), 60 * 60 * 1000);
     } else {
-      log.warn('Piper TTS not ready — run: npm run setup');
+      log.warn('TTS not ready — set Gemini API key or run: npm run setup');
     }
   } catch (e) {
-    log.warn(`Piper TTS check failed: ${e.message}`);
+    log.error(`TTS initialization failed: ${e.message}`);
   }
 
   // ── LangGraph ─────────────────────────────────────────────────────────────────

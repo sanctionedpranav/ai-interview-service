@@ -66,24 +66,31 @@ const sessionToState = (session, overrides = {}) => ({
 
 // ── Persist graph output back to DB ──────────────────────────────────────────
 const persist = async (session, out) => {
-    if (out.candidateContext !== undefined) session.candidateContext = out.candidateContext;
-    if (out.isIntroQuestion !== undefined) session.isIntroQuestion = out.isIntroQuestion;
-    if (out.difficultyLevel) session.difficultyLevel = out.difficultyLevel;
-    if (out.runningScore !== undefined) session.runningScore = out.runningScore;
-    if (out.questionCount !== undefined) session.questionCount = out.questionCount;
-    if (out.followupCount !== undefined) session.followupCount = out.followupCount;
-    if (out.questionHistory) session.questionHistory = out.questionHistory;
-    if (out.answerHistory) session.answerHistory = out.answerHistory;
-    if (out.transcript) session.transcript = out.transcript;
-    if (out.coveredTopics) session.coveredTopics = out.coveredTopics;
-    if (out.backgroundQuestionCount !== undefined) session.backgroundQuestionCount = out.backgroundQuestionCount;
-    if (out.offTopicWarningCount !== undefined) session.offTopicWarningCount = out.offTopicWarningCount;
-    if (out.silenceViolationCount !== undefined) session.silenceViolationCount = out.silenceViolationCount;
+    const update = {};
+    if (out.candidateContext !== undefined) update.candidateContext = out.candidateContext;
+    if (out.isIntroQuestion !== undefined) update.isIntroQuestion = out.isIntroQuestion;
+    if (out.difficultyLevel) update.difficultyLevel = out.difficultyLevel;
+    if (out.runningScore !== undefined) update.runningScore = out.runningScore;
+    if (out.questionCount !== undefined) update.questionCount = out.questionCount;
+    if (out.followupCount !== undefined) update.followupCount = out.followupCount;
+    if (out.questionHistory) update.questionHistory = out.questionHistory;
+    if (out.answerHistory) update.answerHistory = out.answerHistory;
+    if (out.transcript) update.transcript = out.transcript;
+    if (out.coveredTopics) update.coveredTopics = out.coveredTopics;
+    if (out.backgroundQuestionCount !== undefined) update.backgroundQuestionCount = out.backgroundQuestionCount;
+    if (out.offTopicWarningCount !== undefined) update.offTopicWarningCount = out.offTopicWarningCount;
+    if (out.silenceViolationCount !== undefined) update.silenceViolationCount = out.silenceViolationCount;
+
     if (out.is_complete) {
-        session.interviewStage = 'FINAL_EVALUATION';
-        session.endTime = new Date();
+        update.interviewStage = 'FINAL_EVALUATION';
+        update.endTime = new Date();
     }
-    await session.save();
+
+    await InterviewSession.findOneAndUpdate(
+        { sessionId: session.sessionId },
+        { $set: update },
+        { new: true }
+    );
 };
 
 // ── POST /interview/start ─────────────────────────────────────────────────────

@@ -2,11 +2,15 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { spawn } from 'child_process';
 import { genAI } from '../ai/aiService.js';
 import { log } from '../utils/logger.js';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
-const OUTPUT_DIR = path.join(process.cwd(), 'public', 'audio');
+const ROOT = process.cwd();
+const OUTPUT_DIR = path.join(ROOT, 'public', 'audio');
+const PIPER_BIN = path.join(ROOT, 'bin', 'piper', 'piper');
+const PIPER_MODEL = path.join(ROOT, 'models', 'piper', 'en_US-ryan-high.onnx');
 
 // ── Ensure output directory ───────────────────────────────────────────────────
 if (!fs.existsSync(OUTPUT_DIR)) {
@@ -14,95 +18,140 @@ if (!fs.existsSync(OUTPUT_DIR)) {
 }
 
 /**
- * Gemini TTS Service (2026 Edition)
- *
- * Uses Gemini 2.5's native multimodal audio output capabilities.
- * Supports high-quality voices like "Vega".
+ * Hybrid TTS Service (Piper + Gemini Fallback)
  */
 export const ttsService = {
   /**
-   * Gemini TTS is available if the GenAI client has been initialized with a valid key.
+   * TTS is available if Piper binary exists OR Gemini key is set.
    */
   isAvailable() {
-    return !!genAI;
+    return fs.existsSync(PIPER_BIN) || !!genAI;
   },
 
   /**
-   * Convert text to speech using Gemini Multimodal Audio Output.
-   * @param {string} text - Text to synthesize.
-   * @param {string} [sessionId] - Used for output file naming.
-   * @param {object} [options] - Optional options.
-   * @param {string} [options.voice='Vega'] - Voice name (e.g., Vega, Kore, Zephyr).
-   * @returns {Promise<string>} Public URL path of the generated audio (e.g. /audio/xxx.mp3).
+   * Generate speech using local Piper binary (Primary).
+   * @private
    */
-  async speak(text, sessionId = uuidv4(), options = {}) {
-    if (!this.isAvailable()) {
-      log.warn('⚠️  Gemini TTS: Service not available (check API key)');
-      return null;
-    }
+  async speakPiper(text, outputPath) {
+    return new Promise((resolve, reject) => {
+      if (!fs.existsSync(PIPER_BIN)) return reject(new Error('Piper binary not found'));
+      if (!fs.existsSync(PIPER_MODEL)) return reject(new Error('Piper model not found'));
 
-    // Safety check for text
-    const cleanText = (text || '').replace(/\[.*?\]/g, '').trim();
-    if (!cleanText) {
-      log.warn('⚠️  Gemini TTS: Empty text provided, skipping.');
-      return null;
-    }
-
-    // Predictable filename based on sessionId and text hash
-    const hash = crypto.createHash('md5').update(cleanText).digest('hex').slice(0, 8);
-    const outputFileName = `${sessionId}_${hash}.mp3`;
-    const outputPath = path.join(OUTPUT_DIR, outputFileName);
-
-    // If file already exists, return immediately (cache hit)
-    if (fs.existsSync(outputPath)) {
-      return `/audio/${outputFileName}`;
-    }
-
-    try {
-      const voiceName = options.voice || 'Puck';
-      log.info(`🔊 Gemini TTS: Synthesizing with voice "${voiceName}"...`);
-
-      const result = await genAI.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: [{ role: 'user', parts: [{ text: cleanText }] }],
-        config: {
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName: voiceName
-              }
-            }
-          }
+      log.info(`🔊 Piper TTS: Synthesizing "${text.slice(0, 30)}..."`);
+      
+      const piperDir = path.dirname(PIPER_BIN);
+      const piper = spawn(PIPER_BIN, [
+        '--model', PIPER_MODEL,
+        '--output_file', outputPath,
+        '--espeak_data', path.join(piperDir, 'espeak-ng-data')
+      ], {
+        env: {
+          ...process.env,
+          DYLD_LIBRARY_PATH: piperDir,
+          LD_LIBRARY_PATH: piperDir
         }
       });
 
-      // Extract audio data from response
-      const audioPart = result.response?.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-      
-      if (!audioPart || !audioPart.inlineData || !audioPart.inlineData.data) {
-        throw new Error('Gemini did not return audio data');
-      }
+      piper.stdin.write(text);
+      piper.stdin.end();
 
-      const buffer = Buffer.from(audioPart.inlineData.data, 'base64');
-      fs.writeFileSync(outputPath, buffer);
+      const timeout = setTimeout(() => {
+        piper.kill();
+        reject(new Error('Piper TTS Timeout (60s)'));
+      }, 60000);
 
-      log.success(`🔊 Gemini TTS: Generated audio → ${outputFileName}`);
-      return `/audio/${outputFileName}`;
+      piper.on('close', (code) => {
+        clearTimeout(timeout);
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`Piper exited with code ${code}`));
+        }
+      });
 
-    } catch (err) {
-      if (err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
-        log.warn('⚠️  Gemini TTS: Quota Exceeded (Free Tier). Skipping audio for this turn.');
-      } else {
-        log.error(`❌ Gemini TTS Error: ${err.message}`);
-      }
-      return null;
-    }
+      piper.on('error', (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
   },
 
   /**
-   * Remove old generated audio files to free disk space.
-   * @param {number} [olderThanMs=3600000] - Delete files older than this (default: 1 hour).
+   * Convert text to speech using Piper (Primary) or Gemini (Fallback).
+   * @param {string} text - Text to synthesize.
+   * @param {string} [sessionId] - Used for output file naming.
+   * @param {object} [options] - Optional options.
+   * @returns {Promise<string>} Public URL path of the generated audio.
+   */
+  async speak(text, sessionId = uuidv4(), options = {}) {
+    if (!this.isAvailable()) {
+      log.warn('⚠️ TTS: No service available (Piper or Gemini)');
+      return null;
+    }
+
+    const cleanText = (text || '').replace(/\[.*?\]/g, '').trim();
+    if (!cleanText) return null;
+
+    const hash = crypto.createHash('md5').update(cleanText).digest('hex').slice(0, 8);
+    
+    // Piper uses .wav, Gemini uses .mp3
+    // We check for either existing file to avoid re-synthesis
+    const piperFileName = `${sessionId}_${hash}.wav`;
+    const geminiFileName = `${sessionId}_${hash}.mp3`;
+    
+    if (fs.existsSync(path.join(OUTPUT_DIR, piperFileName))) return `/audio/${piperFileName}`;
+    if (fs.existsSync(path.join(OUTPUT_DIR, geminiFileName))) return `/audio/${geminiFileName}`;
+
+    // --- Try Piper (Primary) ---
+    if (fs.existsSync(PIPER_BIN)) {
+      try {
+        const outputPath = path.join(OUTPUT_DIR, piperFileName);
+        await this.speakPiper(cleanText, outputPath);
+        log.success(`🔊 Piper TTS: Generated → ${piperFileName}`);
+        return `/audio/${piperFileName}`;
+      } catch (err) {
+        log.warn(`⚠️ Piper TTS Failed: ${err.message}. Falling back to Gemini...`);
+      }
+    }
+
+    // --- Try Gemini (Fallback) ---
+    if (genAI) {
+      try {
+        const voiceName = options.voice || 'Puck';
+        log.info(`🔊 Gemini TTS: Synthesizing with voice "${voiceName}"...`);
+
+        const result = await genAI.models.generateContent({
+          model: 'gemini-2.5-flash-preview-tts', // Multimodal audio model
+          contents: [{ role: 'user', parts: [{ text: cleanText }] }],
+          config: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: voiceName
+                }
+              }
+            }
+          }
+        });
+
+        const audioPart = result.response?.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+        if (!audioPart?.inlineData?.data) throw new Error('Gemini did not return audio data');
+
+        const outputPath = path.join(OUTPUT_DIR, geminiFileName);
+        fs.writeFileSync(outputPath, Buffer.from(audioPart.inlineData.data, 'base64'));
+        log.success(`🔊 Gemini TTS: Generated → ${geminiFileName}`);
+        return `/audio/${geminiFileName}`;
+      } catch (err) {
+        log.error(`❌ Gemini TTS Error: ${err.message}`);
+      }
+    }
+
+    return null;
+  },
+
+  /**
+   * Cleanup old audio files
    */
   cleanup(olderThanMs = 60 * 60 * 1000) {
     try {
@@ -117,7 +166,7 @@ export const ttsService = {
           count++;
         }
       }
-      if (count > 0) log.info(`🧹 Gemini TTS cleanup: Removed ${count} old audio files`);
+      if (count > 0) log.info(`🧹 TTS Cleanup: Removed ${count} old files`);
     } catch (err) {
       log.error(`Cleanup error: ${err.message}`);
     }

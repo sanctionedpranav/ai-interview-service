@@ -159,6 +159,7 @@ export const ttsService = {
       const files = fs.readdirSync(OUTPUT_DIR);
       let count = 0;
       for (const file of files) {
+        if (file === '.gitkeep') continue; // Never delete the placeholder
         const fp = path.join(OUTPUT_DIR, file);
         const stat = fs.statSync(fp);
         if (now - stat.mtimeMs > olderThanMs) {

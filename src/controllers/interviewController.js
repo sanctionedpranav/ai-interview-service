@@ -3,6 +3,7 @@ import fs from 'fs';
 import { InterviewSession } from '../models/InterviewSession.js';
 import { log } from '../utils/logger.js';
 import { interviewQueue, interviewQueueEvents } from '../queues/interviewQueue.js';
+import { generateSttPrompt } from '../config/dsaKeywords.js';
 
 /**
  * Interview Controller
@@ -240,8 +241,8 @@ export const processAudio = async (req, res) => {
         try {
             const { sttService } = await import('../speech/stt.js');
             
-            // Biasing the Whisper STT with a technical prompt to reduce hallucination and fix jargon/accent recognition
-            const sttPrompt = `Technical software engineering interview for ${session.jobRole || 'developer'}. Topics: programming, system design, frontend, backend, API, React, Node.js, Javascript, databases, scalability, cloud, AWS, UI, UX, algorithms, data structures. Includes candidate answering questions naturally.`;
+            // Biasing the Whisper STT with DSA keywords to improve recognition of algorithm and data structure terms
+            const sttPrompt = generateSttPrompt(session.jobRole || 'developer');
             
             transcribedText = await sttService.transcribe(audioFile.path, { prompt: sttPrompt });
             
@@ -359,16 +360,185 @@ export const getInterviewResult = async (req, res) => {
     }
 };
 
+// ── POST /interview/enable-protection ────────────────────────────────────────
+/**
+ * Enable interview protection for a session
+ * Call this when the interview officially starts
+ */
+export const enableProtection = async (req, res) => {
+    try {
+        const { sessionId, protectionConfig } = req.body;
+        const session = await InterviewSession.findOne({ sessionId });
+        if (!session) return res.status(404).json({ error: 'Session not found' });
+
+        // Initialize/update security metrics
+        if (!session.securityMetrics) {
+            session.securityMetrics = {
+                tabSwitchCount: 0,
+                copyAttemptCount: 0,
+                refreshAttemptCount: 0,
+                rightClickAttemptCount: 0,
+                devToolsAttemptCount: 0,
+                backNavigationAttempts: 0,
+                totalSuspiciousEvents: 0,
+                protectionEnabled: true,
+                protectionStartTime: new Date(),
+                lastSuspiciousEventTime: null,
+            };
+        } else {
+            session.securityMetrics.protectionEnabled = true;
+            session.securityMetrics.protectionStartTime = new Date();
+        }
+
+        session.cheatingEvents.push({
+            event: 'PROTECTION_ENABLED',
+            timestamp: new Date(),
+            metadata: { config: protectionConfig },
+        });
+
+        await session.save();
+        log.info(`✅ Interview protection enabled for session: ${sessionId}`);
+        
+        return res.json({ 
+            success: true, 
+            message: 'Interview protection enabled',
+            securityMetrics: session.securityMetrics,
+        });
+    } catch (err) {
+        log.error('enableProtection', err);
+        return res.status(500).json({ error: err.message });
+    }
+};
+
+// ── POST /interview/disable-protection ────────────────────────────────────────
+/**
+ * Disable interview protection for a session
+ * Call this when the interview completes or user quits
+ */
+export const disableProtection = async (req, res) => {
+    try {
+        const { sessionId, reason } = req.body;
+        const session = await InterviewSession.findOne({ sessionId });
+        if (!session) return res.status(404).json({ error: 'Session not found' });
+
+        if (session.securityMetrics) {
+            session.securityMetrics.protectionEnabled = false;
+        }
+
+        session.cheatingEvents.push({
+            event: 'PROTECTION_DISABLED',
+            timestamp: new Date(),
+            metadata: { reason: reason || 'unspecified' },
+        });
+
+        await session.save();
+        log.info(`❌ Interview protection disabled for session: ${sessionId} - Reason: ${reason}`);
+        
+        return res.json({ 
+            success: true, 
+            message: 'Interview protection disabled',
+            securityMetrics: session.securityMetrics,
+        });
+    } catch (err) {
+        log.error('disableProtection', err);
+        return res.status(500).json({ error: err.message });
+    }
+};
+
 // ── POST /interview/cheating-event ────────────────────────────────────────────
+/**
+ * Log a suspicious/security event during interview
+ * 
+ * Supported events:
+ * - PAGE_REFRESH_ATTEMPT, REFRESH_HOTKEY_BLOCKED
+ * - BACK_BUTTON_ATTEMPT, BACK_NAVIGATION_BLOCKED
+ * - COPY_ATTEMPT_BLOCKED, CUT_ATTEMPT_BLOCKED, PASTE_ATTEMPT_BLOCKED, CTRL_C_BLOCKED
+ * - RIGHT_CLICK_BLOCKED
+ * - TAB_SWITCH_AWAY, TAB_SWITCH_BACK, WINDOW_FOCUS_LOST, WINDOW_FOCUS_REGAINED
+ * - DEVTOOLS_ATTEMPT_BLOCKED, DEVTOOLS_CONTEXT_MENU_BLOCKED
+ */
 export const recordCheatingEvent = async (req, res) => {
     try {
         const { sessionId, event, timestamp, metadata } = req.body;
         const session = await InterviewSession.findOne({ sessionId });
         if (!session) return res.status(404).json({ error: 'Session not found' });
+
+        // Initialize security metrics if not present
+        if (!session.securityMetrics) {
+            session.securityMetrics = {
+                tabSwitchCount: 0,
+                copyAttemptCount: 0,
+                refreshAttemptCount: 0,
+                rightClickAttemptCount: 0,
+                devToolsAttemptCount: 0,
+                backNavigationAttempts: 0,
+                totalSuspiciousEvents: 0,
+                protectionEnabled: true,
+                protectionStartTime: new Date(),
+                lastSuspiciousEventTime: null,
+            };
+        }
+
+        // Add event to cheatingEvents array
         session.cheatingEvents = [...(session.cheatingEvents || []), { event, timestamp: timestamp || new Date(), metadata }];
+
+        // Update security metrics based on event type
+        const eventTypeMapping = {
+            'TAB_SWITCH_AWAY': 'tabSwitchCount',
+            'TAB_SWITCH_BACK': 'tabSwitchCount',
+            'WINDOW_FOCUS_LOST': 'tabSwitchCount',
+            'WINDOW_FOCUS_REGAINED': 'tabSwitchCount',
+            'COPY_ATTEMPT_BLOCKED': 'copyAttemptCount',
+            'CUT_ATTEMPT_BLOCKED': 'copyAttemptCount',
+            'PASTE_ATTEMPT_BLOCKED': 'copyAttemptCount',
+            'CTRL_C_BLOCKED': 'copyAttemptCount',
+            'PAGE_REFRESH_ATTEMPT': 'refreshAttemptCount',
+            'REFRESH_HOTKEY_BLOCKED': 'refreshAttemptCount',
+            'RIGHT_CLICK_BLOCKED': 'rightClickAttemptCount',
+            'DEVTOOLS_ATTEMPT_BLOCKED': 'devToolsAttemptCount',
+            'DEVTOOLS_CONTEXT_MENU_BLOCKED': 'devToolsAttemptCount',
+            'BACK_BUTTON_ATTEMPT': 'backNavigationAttempts',
+            'BACK_NAVIGATION_BLOCKED': 'backNavigationAttempts',
+        };
+
+        // Increment relevant metric
+        const metricKey = eventTypeMapping[event];
+        if (metricKey && session.securityMetrics[metricKey] !== undefined) {
+            session.securityMetrics[metricKey]++;
+        }
+
+        // Update total suspicious events count
+        session.securityMetrics.totalSuspiciousEvents++;
+        session.securityMetrics.lastSuspiciousEventTime = new Date();
+
+        // Log the event
+        log.info(`🚨 Security Event [${event}] for session ${sessionId}`, metadata);
+
+        // Check if we should auto-terminate (multiple suspicious events)
+        const shouldAutoTerminate =
+            session.securityMetrics.totalSuspiciousEvents > 10 ||
+            session.securityMetrics.tabSwitchCount > 5 ||
+            session.securityMetrics.copyAttemptCount > 3;
+
+        if (shouldAutoTerminate && session.interviewStage !== 'END') {
+            log.warn(`⚠️ Auto-terminating interview ${sessionId} due to excessive suspicious activity`);
+            session.interviewStage = 'END';
+            session.endTime = new Date();
+            session.cheatingEvents.push({
+                event: 'INTERVIEW_AUTO_TERMINATED',
+                timestamp: new Date(),
+                metadata: { reason: 'Excessive suspicious activity', totalEvents: session.securityMetrics.totalSuspiciousEvents },
+            });
+        }
+
         await session.save();
-        return res.json({ success: true });
+        return res.json({ 
+            success: true,
+            autoTerminated: shouldAutoTerminate,
+            securityMetrics: session.securityMetrics,
+        });
     } catch (err) {
+        log.error('recordCheatingEvent', err);
         return res.status(500).json({ error: err.message });
     }
 };

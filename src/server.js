@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import cors from 'cors';
 import morgan from 'morgan';
 import path from 'path';
+import os from 'os';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { config } from './config/index.js';
@@ -38,7 +39,10 @@ app.use((req, _res, next) => {
   next();
 });
 
-app.use('/audio', express.static(path.join(__dirname, '../public/audio')));
+// Serve TTS audio from the OS temp directory (industry standard for ephemeral files)
+const TTS_DIR = path.join(os.tmpdir(), 'ai-interview-tts');
+if (!fs.existsSync(TTS_DIR)) fs.mkdirSync(TTS_DIR, { recursive: true });
+app.use('/audio', express.static(TTS_DIR));
 
 // Routes
 app.use('/interview', interviewRoutes);

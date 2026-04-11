@@ -80,6 +80,20 @@ const InterviewSessionSchema = new mongoose.Schema({
     },
   ],
 
+  // ── Interview Security Metrics ────────────────────────────────────────────
+  securityMetrics: {
+    tabSwitchCount: { type: Number, default: 0 },
+    copyAttemptCount: { type: Number, default: 0 },
+    refreshAttemptCount: { type: Number, default: 0 },
+    rightClickAttemptCount: { type: Number, default: 0 },
+    devToolsAttemptCount: { type: Number, default: 0 },
+    backNavigationAttempts: { type: Number, default: 0 },
+    totalSuspiciousEvents: { type: Number, default: 0 },
+    protectionEnabled: { type: Boolean, default: false },
+    protectionStartTime: { type: Date, default: null },
+    lastSuspiciousEventTime: { type: Date, default: null },
+  },
+
   // ── Chapter Interview Metadata ────────────────────────────────────────────
   // 'generic' = standard job-role interview, 'chapter' = admin-configured chapter interview
   interviewMode: { type: String, enum: ['generic', 'chapter'], default: 'generic' },

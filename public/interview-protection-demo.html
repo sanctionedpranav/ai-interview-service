@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interview Protection System - Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .status-widget {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .status-widget h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+            font-size: 14px;
+        }
+
+        .status-row:last-child {
+            border-bottom: none;
+        }
+
+        .status-label {
+            color: #666;
+            font-weight: 500;
+        }
+
+        .status-value {
+            color: #333;
+            font-weight: 600;
+            font-family: 'Courier New', monospace;
+        }
+
+        .status-value.active {
+            color: #00aa00;
+        }
+
+        .status-value.inactive {
+            color: #aa0000;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .control-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .control-card h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 10px;
+        }
+
+        button:last-child {
+            margin-bottom: 0;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-danger {
+            background: #ff6b6b;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #ff5252;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(255, 107, 107, 0.3);
+        }
+
+        .btn-warning {
+            background: #ffd43b;
+            color: #333;
+        }
+
+        .btn-warning:hover {
+            background: #ffca00;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(255, 212, 59, 0.3);
+        }
+
+        .test-scenarios {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+
+        .test-scenarios h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .scenario {
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            background: #f9f9f9;
+        }
+
+        .scenario-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+        }
+
+        .scenario-icon {
+            font-size: 18px;
+            margin-right: 10px;
+        }
+
+        .scenario-description {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 10px;
+            line-height: 1.6;
+        }
+
+        .scenario-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .scenario-btn {
+            flex: 1;
+            min-width: 150px;
+            padding: 8px 12px;
+            border: none;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .scenario-btn-test {
+            background: #667eea;
+            color: white;
+        }
+
+        .scenario-btn-test:hover {
+            background: #5568d3;
+        }
+
+        .events-log {
+            background: #1e1e1e;
+            color: #00ff00;
+            padding: 20px;
+            border-radius: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .events-log h2 {
+            color: #00ff00;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+
+        .event-line {
+            line-height: 1.8;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .event-time {
+            color: #00ccff;
+        }
+
+        .event-type {
+            color: #ffaa00;
+        }
+
+        .event-success {
+            color: #00ff00;
+        }
+
+        .event-error {
+            color: #ff6b6b;
+        }
+
+        .footer {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .session-input {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        .badge-enabled {
+            background: #00ff00;
+            color: #000;
+        }
+
+        .badge-disabled {
+            background: #ff6b6b;
+            color: white;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #333;
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #555;
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #777;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🛡️ Interview Protection System - Demo</h1>
+            <p>Test all Phase 1 protection mechanisms in a safe environment</p>
+        </div>
+
+        <div class="status-widget">
+            <h2>Protection Status</h2>
+            <div class="status-row">
+                <span class="status-label">Protection Enabled</span>
+                <span id="protection-status" class="status-value inactive">❌ NOT ENABLED</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Session ID</span>
+                <span id="session-id" class="status-value">-</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">API Base URL</span>
+                <span id="api-url" class="status-value">-</span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="control-card">
+                <h3>Session Setup</h3>
+                <input type="text" id="session-input" class="session-input" placeholder="Enter Session ID (or auto-generate)">
+                <button class="btn-primary" onclick="generateSessionId()">Generate Session ID</button>
+                <button class="btn-primary" onclick="initializeProtection()">Initialize Protection</button>
+                <button class="btn-danger" onclick="disableProtection()">Disable Protection</button>
+            </div>
+
+            <div class="control-card">
+                <h3>Statistics</h3>
+                <div style="font-size: 12px; color: #666;">
+                    <p><strong>Total Events:</strong> <span id="total-events">0</span></p>
+                    <p><strong>Tab Switches:</strong> <span id="tab-switches">0</span></p>
+                    <p><strong>Copy Attempts:</strong> <span id="copy-attempts">0</span></p>
+                    <p><strong>Refresh Attempts:</strong> <span id="refresh-attempts">0</span></p>
+                    <p><strong>Right-Clicks:</strong> <span id="right-clicks">0</span></p>
+                    <p><strong>Back Navigation:</strong> <span id="back-nav">0</span></p>
+                </div>
+            </div>
+
+            <div class="control-card">
+                <h3>Export & Debug</h3>
+                <button class="btn-warning" onclick="getProtectionState()">Get Protection State</button>
+                <button class="btn-warning" onclick="getProtectionStats()">Get Protection Stats</button>
+                <button class="btn-warning" onclick="clearLogs()">Clear Event Log</button>
+            </div>
+        </div>
+
+        <div class="test-scenarios">
+            <h2>Test Scenarios (Phase 1)</h2>
+
+            <div class="scenario">
+                <div class="scenario-title">
+                    <span class="scenario-icon">🔄</span>
+                    Scenario 1: Page Refresh Protection
+                </div>
+                <div class="scenario-description">
+                    Tests if page refresh attempts are blocked. Try pressing F5, Ctrl+R, or Cmd+R.
+                    The browser will show a confirmation dialog and the event will be logged.
+                </div>
+                <div class="scenario-actions">
+                    <button class="scenario-btn scenario-btn-test" onclick="simulateRefreshAttempt()">Simulate Refresh</button>
+                    <button class="scenario-btn scenario-btn-test" onclick="logEvent('REFRESH_HOTKEY_BLOCKED', {hotkey: 'F5'})">Log Refresh Event</button>
+                </div>
+            </div>
+
+            <div class="scenario">
+                <div class="scenario-title">
+                    <span class="scenario-icon">⬅️</span>
+                    Scenario 2: Back/Forward Blocking
+                </div>
+                <div class="scenario-description">
+                    Tests if browser back/forward navigation is blocked. Try clicking the browser's back button
+                    or pressing Alt+Left Arrow. Navigation will be prevented.
+                </div>
+                <div class="scenario-actions">
+                    <button class="scenario-btn scenario-btn-test" onclick="logEvent('BACK_BUTTON_ATTEMPT', {url: window.location.href})">Log Back Button Attempt</button>
+                    <button class="scenario-btn scenario-btn-test" onclick="window.history.back()">Try Back Button</button>
+                </div>
+            </div>
+
+            <div class="scenario">
+                <div class="scenario-title">
+                    <span class="scenario-icon">📋</span>
+                    Scenario 3: Copy-Paste Prevention
+                </div>
+                <div class="scenario-description">
+                    Tests if copy, cut, and paste are blocked. Try Ctrl+C, Ctrl+V, or Cmd+C in the textarea below.
+                    Copy attempts will be blocked and logged.
+                </div>
+                <div class="scenario-actions">
+                    <textarea style="width: 100%; height: 50px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 10px; font-size: 12px;" placeholder="Try copying text from here..."></textarea>
+                    <button class="scenario-btn scenario-btn-test" onclick="logEvent('COPY_ATTEMPT_BLOCKED', {targetElement: 'DIV'})">Log Copy Attempt</button>
+                    <button class="scenario-btn scenario-btn-test" onclick="logEvent('PASTE_ATTEMPT_BLOCKED', {targetElement: 'INPUT'})">Log Paste Attempt</button>
+                </div>
+            </div>
+
+            <div class="scenario">
+                <div class="scenario-title">
+                    <span class="scenario-icon">🖱️</span>
+                    Scenario 4: Right-Click Disabling
+                </div>
+                <div class="scenario-description">
+                    Tests if right-click context menu is disabled. Try right-clicking anywhere on the page.
+                    Right-click will be prevented and logged.
+                </div>
+                <div class="scenario-actions">
+                    <button class="scenario-btn scenario-btn-test" onclick="logEvent('RIGHT_CLICK_BLOCKED', {attemptNumber: 1, coordinates: {x: 100, y: 200}})">Log Right-Click</button>
+                </div>
+            </div>
+
+            <div class="scenario">
+                <div class="scenario-title">
+                    <span class="scenario-icon">🔀</span>
+                    Scenario 5: Tab Switching Detection
+                </div>
+                <div class="scenario-description">
+                    Tests if tab switching is detected and logged. Try switching to another browser tab and coming back.
+                    The system will detect focus loss and log the event.
+                </div>
+                <div class="scenario-actions">
+                    <button class="scenario-btn scenario-btn-test" onclick="logEvent('TAB_SWITCH_AWAY', {switchNumber: 1})">Log Tab Away</button>
+                    <button class="scenario-btn scenario-btn-test" onclick="logEvent('TAB_SWITCH_BACK', {returnTime: new Date().toISOString()})">Log Tab Return</button>
+                    <button class="scenario-btn scenario-btn-test" onclick="logEvent('WINDOW_FOCUS_LOST', {})">Log Focus Lost</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="events-log">
+            <h2>Event Log</h2>
+            <div id="events-log-content" style="height: 300px; overflow-y: auto;">
+                <span class="event-line"><span class="event-time">[READY]</span> System initialized. Generate a session ID to begin.</span>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>This is a demo environment for testing the Interview Protection System Phase 1 features.</p>
+            <p>All events are logged to the backend API at <code id="footer-url">localhost:5005</code></p>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:5005/interview';
+        let currentSessionId = '';
+        let eventCount = 0;
+
+        // Generate unique session ID
+        function generateSessionId() {
+            currentSessionId = `test_demo_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            document.getElementById('session-input').value = currentSessionId;
+            document.getElementById('session-id').textContent = currentSessionId;
+            addLog('SESSION_GENERATED', `Session ID: ${currentSessionId}`);
+        }
+
+        // Initialize protection
+        async function initializeProtection() {
+            const sessionId = document.getElementById('session-input').value.trim();
+            if (!sessionId) {
+                alert('Please generate or enter a session ID first');
+                return;
+            }
+
+            currentSessionId = sessionId;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/enable-protection`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sessionId: currentSessionId,
+                        protectionConfig: {
+                            enableRefreshBlock: true,
+                            enableBackForwardBlock: true,
+                            enableCopyPasteBlock: true,
+                            enableRightClickBlock: true,
+                            enableTabSwitchDetection: true,
+                        },
+                    }),
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    updateProtectionStatus(true);
+                    addLog('PROTECTION_ENABLED', 'Interview protection initialized successfully');
+                    addLog('METRICS', JSON.stringify(data.securityMetrics, null, 2));
+                } else {
+                    addLog('ERROR', 'Failed to enable protection: ' + JSON.stringify(data));
+                }
+            } catch (err) {
+                addLog('ERROR', 'Failed to initialize protection: ' + err.message);
+            }
+        }
+
+        // Disable protection
+        async function disableProtection() {
+            if (!currentSessionId) {
+                alert('No active session');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/disable-protection`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sessionId: currentSessionId,
+                        reason: 'demo_test_complete',
+                    }),
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    updateProtectionStatus(false);
+                    addLog('PROTECTION_DISABLED', 'Interview protection disabled');
+                } else {
+                    addLog('ERROR', 'Failed to disable protection: ' + JSON.stringify(data));
+                }
+            } catch (err) {
+                addLog('ERROR', 'Failed to disable protection: ' + err.message);
+            }
+        }
+
+        // Log event to backend
+        async function logEvent(eventType, metadata) {
+            if (!currentSessionId) {
+                alert('Please initialize protection first');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/cheating-event`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sessionId: currentSessionId,
+                        event: eventType,
+                        timestamp: new Date(),
+                        metadata: metadata || {},
+                    }),
+                });
+
+                const data = await response.json();
+                eventCount++;
+                addLog('EVENT_LOGGED', `${eventType} (Total: ${eventCount})`);
+                updateStats(data.securityMetrics);
+            } catch (err) {
+                addLog('ERROR', `Failed to log ${eventType}: ${err.message}`);
+            }
+        }
+
+        // Simulate refresh attempt
+        function simulateRefreshAttempt() {
+            addLog('INFO', 'Refresh attempt simulated. Browser would show confirmation dialog.');
+            logEvent('PAGE_REFRESH_ATTEMPT', { url: window.location.href });
+        }
+
+        // Update protection status
+        function updateProtectionStatus(enabled) {
+            const status = document.getElementById('protection-status');
+            if (enabled) {
+                status.textContent = '✅ ENABLED';
+                status.className = 'status-value active';
+            } else {
+                status.textContent = '❌ DISABLED';
+                status.className = 'status-value inactive';
+            }
+        }
+
+        // Update statistics
+        function updateStats(metrics) {
+            document.getElementById('total-events').textContent = metrics.totalSuspiciousEvents || 0;
+            document.getElementById('tab-switches').textContent = metrics.tabSwitchCount || 0;
+            document.getElementById('copy-attempts').textContent = metrics.copyAttemptCount || 0;
+            document.getElementById('refresh-attempts').textContent = metrics.refreshAttemptCount || 0;
+            document.getElementById('right-clicks').textContent = metrics.rightClickAttemptCount || 0;
+            document.getElementById('back-nav').textContent = metrics.backNavigationAttempts || 0;
+        }
+
+        // Add log entry
+        function addLog(type, message) {
+            const logContent = document.getElementById('events-log-content');
+            const timestamp = new Date().toLocaleTimeString();
+            const logLine = document.createElement('div');
+            logLine.className = 'event-line';
+
+            let typeClass = 'event-type';
+            if (type === 'ERROR') typeClass = 'event-error';
+            if (type === 'PROTECTION_ENABLED' || type === 'EVENT_LOGGED') typeClass = 'event-success';
+
+            logLine.innerHTML = `<span class="event-time">[${timestamp}]</span> <span class="${typeClass}">${type}:</span> ${message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}`;
+            logContent.appendChild(logLine);
+            logContent.scrollTop = logContent.scrollHeight;
+        }
+
+        // Get protection state
+        async function getProtectionState() {
+            if (!currentSessionId) {
+                alert('No active session');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/state/${currentSessionId}`);
+                const data = await response.json();
+                addLog('STATE', JSON.stringify(data, null, 2));
+            } catch (err) {
+                addLog('ERROR', 'Failed to get state: ' + err.message);
+            }
+        }
+
+        // Get protection stats
+        async function getProtectionStats() {
+            if (!currentSessionId) {
+                alert('No active session');
+                return;
+            }
+            addLog('STATS', JSON.stringify({
+                totalEvents: document.getElementById('total-events').textContent,
+                tabSwitches: document.getElementById('tab-switches').textContent,
+                copyAttempts: document.getElementById('copy-attempts').textContent,
+                refreshAttempts: document.getElementById('refresh-attempts').textContent,
+                rightClicks: document.getElementById('right-clicks').textContent,
+                backNavigation: document.getElementById('back-nav').textContent,
+            }, null, 2));
+        }
+
+        // Clear logs
+        function clearLogs() {
+            const logContent = document.getElementById('events-log-content');
+            logContent.innerHTML = '<span class="event-line"><span class="event-time">[CLEARED]</span> Event log cleared.</span>';
+        }
+
+        // Initialize on page load
+        window.addEventListener('load', () => {
+            document.getElementById('api-url').textContent = API_BASE_URL;
+            document.getElementById('footer-url').textContent = API_BASE_URL;
+            addLog('READY', 'Demo page loaded. Generate a session ID to begin testing.');
+        });
+    </script>
+</body>
+</html>

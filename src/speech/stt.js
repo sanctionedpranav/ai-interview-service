@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import Groq from 'groq-sdk';
 import { config } from '../config/index.js';
 
@@ -89,8 +90,7 @@ export const sttService = {
    * @returns {Promise<string>} Transcribed text.
    */
   async transcribeBuffer(audioBuffer, format = 'webm') {
-    const tmpPath = path.join(process.cwd(), 'uploads', `tmp_${Date.now()}.${format}`);
-    fs.mkdirSync(path.dirname(tmpPath), { recursive: true });
+    const tmpPath = path.join(os.tmpdir(), `stt_tmp_${Date.now()}.${format}`);
     fs.writeFileSync(tmpPath, audioBuffer);
     try {
       return await this.transcribe(tmpPath);

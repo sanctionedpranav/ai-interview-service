@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { spawn } from 'child_process';
@@ -8,7 +9,9 @@ import { log } from '../utils/logger.js';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 const ROOT = process.cwd();
-const OUTPUT_DIR = path.join(ROOT, 'public', 'audio');
+// Industry standard: use the OS temp directory for ephemeral generated files.
+// os.tmpdir() always exists, is never committed to git, and the OS manages cleanup.
+const OUTPUT_DIR = path.join(os.tmpdir(), 'ai-interview-tts');
 const PIPER_BIN = path.join(ROOT, 'bin', 'piper', 'piper');
 const PIPER_MODEL = path.join(ROOT, 'models', 'piper', 'en_US-ryan-high.onnx');
 
@@ -159,7 +162,6 @@ export const ttsService = {
       const files = fs.readdirSync(OUTPUT_DIR);
       let count = 0;
       for (const file of files) {
-        if (file === '.gitkeep') continue; // Never delete the placeholder
         const fp = path.join(OUTPUT_DIR, file);
         const stat = fs.statSync(fp);
         if (now - stat.mtimeMs > olderThanMs) {

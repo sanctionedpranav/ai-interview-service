@@ -6,7 +6,9 @@ import {
   submitTextAnswer,
   quitInterview,
   handleSilence,
-  recordCheatingEvent, 
+  recordCheatingEvent,
+  enableProtection,
+  disableProtection,
   getSessionState, 
   getInterviewResult 
 } from '../controllers/interviewController.js';
@@ -19,6 +21,8 @@ router.post('/audio', upload.single('audio'), processAudio);
 router.post('/answer', submitTextAnswer);
 router.post('/silence', handleSilence);
 router.post('/quit', quitInterview);
+router.post('/enable-protection', enableProtection);
+router.post('/disable-protection', disableProtection);
 router.post('/cheating-event', recordCheatingEvent);
 router.get('/state/:sessionId', getSessionState);
 router.get('/result/:sessionId', getInterviewResult);

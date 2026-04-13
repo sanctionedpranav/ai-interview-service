@@ -371,7 +371,7 @@ const getMockResponse = (prompt) => {
     const candidateTrimmed = candidateAnswer.trim().toLowerCase();
     const lastQTrimmed = lastQuestion.trim().toLowerCase();
     const isSkip = /^(i don'?t know|skip|pass|no idea|not sure|idk|no clue)$/i.test(candidateTrimmed);
-    const isRepeat = /^\s*(repeat|rephrase|say that again|didn'?t understand|didn'?t get|could you repeat|what did you ask|come again|pardon|huh)\s*[?!.]?$/i.test(candidateTrimmed);
+    const isRepeat = /^\s*(repeat|rephrase|say that again|didn'?t understand|didn'?t get|could you repeat|what did you ask|come again|pardon|huh|repeat the question|can you repeat|repeat that)\s*[?!.]?$/i.test(candidateTrimmed);
     const isQuit = /\b(quit|stop|end this|i want to stop|end the interview|end the session|and the session|and the interview)\b/i.test(candidateTrimmed);
     const isEcho = candidateTrimmed.length > 15 && lastQTrimmed.length > 15 && (candidateTrimmed === lastQTrimmed || candidateTrimmed.startsWith(lastQTrimmed) || lastQTrimmed.startsWith(candidateTrimmed));
 

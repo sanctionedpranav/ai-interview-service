@@ -105,6 +105,11 @@ const adaptDifficulty = (current, score) => {
 const updateScore = (prev, newScore, count) =>
   count <= 2 ? (prev + newScore) / 2 : prev * 0.7 + newScore * 0.3;
 
+// Minimum number of questions the AI must ask before the interview can end.
+// This is a hard floor — even if the LLM returns is_complete=true earlier,
+// we ignore it until this many answers have been recorded.
+const MIN_QUESTIONS = 5;
+
 
 // ── NODE: ask_question ─────────────────────────────────────────────────────────
 // Speaks the current question via Piper TTS (or leaves it for browser TTS).
@@ -197,7 +202,8 @@ const evaluateAnswerNode = async (state) => {
         answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
         questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: result?.nextExpectedConcepts || [], difficulty: state.difficultyLevel }],
         transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
-        is_complete: !!(1 >= state.maxQuestions),
+        // is_complete only when we've hit the question target AND the hard minimum
+        is_complete: !!(result?.is_complete && 1 >= state.maxQuestions && state.maxQuestions >= MIN_QUESTIONS),
       };
     }
 
@@ -246,6 +252,31 @@ const evaluateAnswerNode = async (state) => {
     }
 
     const evalResult = consolidated?.evaluation || { score: 7, feedback: 'Acknowledged.' };
+
+    // ── FOLLOW-UP LOOP PREVENTION ─────────────────────────────────────────────
+    // Guard 1: If the student scored >= 6, they answered well enough — do NOT loop
+    // them on the same topic regardless of what the LLM decided.
+    // STT transcriptions often sound short/vague even when the answer is correct.
+    if ((evalResult.score || 7) >= 6 && evalResult.needsFollowup) {
+      log.info(`[FollowupGuard] Score ${evalResult.score} >= 6 — overriding needsFollowup=true to advance topic.`);
+      evalResult.needsFollowup = false;
+    }
+
+    // Guard 2: Cap follow-ups per topic at 1. If this topic already appears in
+    // coveredTopics, it means we already did one follow-up — force advancement.
+    const lastCoveredTopic = state.coveredTopics[state.coveredTopics.length - 1] || '';
+    const secondToLastTopic = state.coveredTopics[state.coveredTopics.length - 2] || '';
+    const potentialNextTopic = consolidated?.nextTopic || '';
+    const isRepeatTopic =
+      potentialNextTopic &&
+      (potentialNextTopic.toLowerCase() === lastCoveredTopic.toLowerCase() ||
+       potentialNextTopic.toLowerCase() === secondToLastTopic.toLowerCase());
+    if (evalResult.needsFollowup && isRepeatTopic) {
+      log.info(`[FollowupGuard] Topic "${potentialNextTopic}" already in coveredTopics — forcing topic advancement.`);
+      evalResult.needsFollowup = false;
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     const newScore = updateScore(state.runningScore, evalResult.score || 7, nextNum);
     const newDifficulty = adaptDifficulty(state.difficultyLevel, newScore);
     const nextQ = consolidated?.nextQuestion || `Let's continue with ${chapterTitle}.`;
@@ -262,7 +293,8 @@ const evaluateAnswerNode = async (state) => {
       answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
       questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: consolidated?.nextExpectedConcepts || [], difficulty: newDifficulty }],
       transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
-      is_complete: !!(nextNum >= state.maxQuestions),
+      // Complete only when the LLM agrees AND we've hit the target AND the hard minimum is met
+      is_complete: !!(consolidated?.is_complete && nextNum >= state.maxQuestions && nextNum >= MIN_QUESTIONS),
     };
   }
 
@@ -391,10 +423,28 @@ const evaluateAnswerNode = async (state) => {
   }
 
   let evalResult = consolidated?.evaluation || { score: 7, feedback: 'Acknowledged.' };
+
+  // ── FOLLOW-UP LOOP PREVENTION ─────────────────────────────────────────────
+  // Guard 1: Score >= 6 means the student understood — do NOT loop them.
+  if ((evalResult.score || 7) >= 6 && evalResult.needsFollowup) {
+    log.info(`[FollowupGuard] Score ${evalResult.score} >= 6 — overriding needsFollowup to advance topic.`);
+    evalResult.needsFollowup = false;
+  }
+  // Guard 2: If LLM wants to revisit an already-covered topic, force advancement.
+  const _lastTopic = state.coveredTopics[state.coveredTopics.length - 1] || '';
+  const _prevTopic = state.coveredTopics[state.coveredTopics.length - 2] || '';
+  const _nextTopicRaw = consolidated?.nextTopic || '';
+  if (evalResult.needsFollowup && _nextTopicRaw &&
+      (_nextTopicRaw.toLowerCase() === _lastTopic.toLowerCase() ||
+       _nextTopicRaw.toLowerCase() === _prevTopic.toLowerCase())) {
+    log.info(`[FollowupGuard] Topic "${_nextTopicRaw}" already covered — forcing topic advancement.`);
+    evalResult.needsFollowup = false;
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const newScore = updateScore(state.runningScore, evalResult.score || 7, nextNum);
   const newDifficulty = adaptDifficulty(state.difficultyLevel, newScore);
   let nextQ = consolidated?.nextQuestion || 'Shall we move on to the next topic?';
-  // Always record whatever topic the LLM said — never collapse duplicates to 'Fundamentals'.
   const nextTopic = consolidated?.nextTopic || `Topic-${nextNum}`;
 
   log.evaluateResult(evalResult.score || 7, evalResult.rating || 'Good', evalResult.needsFollowup, newDifficulty);
@@ -458,7 +508,8 @@ const evaluateAnswerNode = async (state) => {
       { role: 'candidate', text: answer },
       { role: 'interviewer', text: nextQ }
     ],
-    is_complete: !!(nextNum >= state.maxQuestions),
+    // Complete only when the LLM agrees AND we've hit the target AND the hard minimum is met
+    is_complete: !!(consolidated?.is_complete && nextNum >= state.maxQuestions && nextNum >= MIN_QUESTIONS),
   };
 };
 
@@ -577,8 +628,8 @@ const endInterviewNode = async (state) => {
     );
   }
   const closingText = state.interviewMode === 'chapter'
-    ? `Great work! I've completed your chapter assessment for ${state.chapterTitle || state.jobRole}. Your report is ready.`
-    : `Thank you so much! I've prepared your evaluation report.`;
+    ? `Alright, that wraps up your chapter review for ${state.chapterTitle || state.jobRole}! You've done well working through all the questions. I'm generating your full assessment report now — hang tight for just a moment.`
+    : `That's a wrap! Thank you so much for going through the interview. You answered all ${state.maxQuestions} questions — I'm putting together your evaluation report right now.`;
   return {
     ...state,
     evaluation: report,
@@ -635,21 +686,31 @@ const silenceNudgeNode = async (state) => {
 
 // ── Routing ────────────────────────────────────────────────────────────────────
 const routeAfterEvaluate = (state) => {
-  // Always intercept completion flag first
-  if (state.is_complete || state.questionCount >= state.maxQuestions) {
+  // Hard minimum guard: never end before MIN_QUESTIONS answers have been collected,
+  // regardless of what the LLM returned for is_complete.
+  const answeredCount = state.answerHistory?.filter(a => a.type === 'technical').length || state.questionCount || 0;
+  const belowMinimum = answeredCount < MIN_QUESTIONS;
+
+  // Route to end only when is_complete AND we've met the hard minimum
+  if (state.is_complete && !belowMinimum) {
     return 'end_interview';
   }
 
-  // Chapter mode: no background discovery phase, always go straight to next Q or end
+  // Also end naturally if we've exceeded maxQuestions and the minimum
+  if (state.questionCount >= state.maxQuestions && !belowMinimum) {
+    return 'end_interview';
+  }
+
+  // Chapter mode: no background discovery phase, always go straight to next Q
   if (state.interviewMode === 'chapter') {
     return 'ask_question';
   }
 
   // Generic mode: stay in discovery phase if background count is active
   if (state.backgroundQuestionCount > 0 && state.backgroundQuestionCount < 4) return 'generate_question';
-  
+
   if (state.questionCount === 0 && !state.isIntroQuestion) return 'generate_question';
-  
+
   return 'ask_question';
 };
 

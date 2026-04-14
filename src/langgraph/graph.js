@@ -202,8 +202,8 @@ const evaluateAnswerNode = async (state) => {
         answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
         questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: result?.nextExpectedConcepts || [], difficulty: state.difficultyLevel }],
         transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
-        // is_complete only when we've hit the question target AND the hard minimum
-        is_complete: !!(result?.is_complete && 1 >= state.maxQuestions && state.maxQuestions >= MIN_QUESTIONS),
+        // is_complete only when we've hit the hard minimum AND the LLM agrees
+        is_complete: !!(result?.is_complete && state.maxQuestions >= MIN_QUESTIONS),
       };
     }
 
@@ -293,8 +293,8 @@ const evaluateAnswerNode = async (state) => {
       answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
       questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: consolidated?.nextExpectedConcepts || [], difficulty: newDifficulty }],
       transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
-      // Complete only when the LLM agrees AND we've hit the target AND the hard minimum is met
-      is_complete: !!(consolidated?.is_complete && nextNum >= state.maxQuestions && nextNum >= MIN_QUESTIONS),
+      // Complete only when the LLM agrees AND the hard minimum is met
+      is_complete: !!(consolidated?.is_complete && nextNum >= MIN_QUESTIONS),
     };
   }
 
@@ -508,8 +508,8 @@ const evaluateAnswerNode = async (state) => {
       { role: 'candidate', text: answer },
       { role: 'interviewer', text: nextQ }
     ],
-    // Complete only when the LLM agrees AND we've hit the target AND the hard minimum is met
-    is_complete: !!(consolidated?.is_complete && nextNum >= state.maxQuestions && nextNum >= MIN_QUESTIONS),
+    // Complete only when the LLM agrees AND the hard minimum is met
+    is_complete: !!(consolidated?.is_complete && nextNum >= MIN_QUESTIONS),
   };
 };
 
@@ -630,12 +630,16 @@ const endInterviewNode = async (state) => {
   const closingText = state.interviewMode === 'chapter'
     ? `Alright, that wraps up your chapter review for ${state.chapterTitle || state.jobRole}! You've done well working through all the questions. I'm generating your full assessment report now — hang tight for just a moment.`
     : `That's a wrap! Thank you so much for going through the interview. You answered all ${state.maxQuestions} questions — I'm putting together your evaluation report right now.`;
+  // If the previous node already set a closing message (ai-driven wrap up), preserve it
+  // otherwise use the standard closing text.
+  const finalQuestion = state.is_complete && state.currentQuestion ? state.currentQuestion : closingText;
+
   return {
     ...state,
     evaluation: report,
-    currentQuestion: closingText,
+    currentQuestion: finalQuestion,
     is_complete: true,
-    transcript: [...state.transcript, { role: 'interviewer', text: closingText }],
+    transcript: [...state.transcript, { role: 'interviewer', text: finalQuestion }],
   };
 };
 
@@ -696,8 +700,9 @@ const routeAfterEvaluate = (state) => {
     return 'end_interview';
   }
 
-  // Also end naturally if we've exceeded maxQuestions and the minimum
-  if (state.questionCount >= state.maxQuestions && !belowMinimum) {
+  // Also end if we've significantly exceeded maxQuestions to prevent infinite loops, 
+  // but give the AI a 3-question "grace period" to wrap up naturally.
+  if (state.questionCount >= (state.maxQuestions + 3) && !belowMinimum) {
     return 'end_interview';
   }
 

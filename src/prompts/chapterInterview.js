@@ -337,16 +337,15 @@ STEP 13 — GENERATE NEXT QUESTION:
     - If isSkip = true → nextTopic MUST be completely different.
     - NEVER ask the same question twice. 
     
+COMPLETION CHECK (IF questionNumber >= totalQuestions):
+  If you have covered the core concepts and reached the target questions, do NOT ask another technical question.
+  → Action: Set is_complete = true.
+  → nextQuestion MUST be a warm human sign-off: "Alright, that covers all my questions for this chapter! You worked through everything really well. Give me a second while I put together your full review report."
+
 ANTI-PATTERNS TO AVOID (strictly banned):
   ❌ "Great answer!", "Excellent!", "Perfect!", "Absolutely!"
   ❌ Repeating the student's answer back to them word for word
   ❌ Questions covering: ${coveredList}
-
-COMPLETION CHECK:
-Set is_complete = true ONLY when questionNumber > totalQuestions (${totalQuestions}).
-This means: after the student answers the LAST question, the next question you return is the warm sign-off.
-The sign-off MUST sound like a real human closing the session — not abrupt.
-\"Alright, those are all the questions I had for you! You worked through everything really well. Sit tight — I'm putting together your full review report now.\"
 
 OUTPUT — Return ONLY valid JSON, zero markdown outside the JSON:
 {

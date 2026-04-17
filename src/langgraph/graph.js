@@ -183,7 +183,8 @@ const evaluateAnswerNode = async (state) => {
           return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, is_complete: true, mode: 'quit', transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
         }
         log.warn(`Chapter Off-topic warning #${warningCount + 1}: ${state.sessionId}`);
-        const msg = result.nextQuestion || `Please stay focused on ${chapterTitle}.`;
+        const blabberingMsg = `Listen, we're here to review ${chapterTitle}. Random answers and blabbering aren't going to help you pass. Let's get back to it: ${lastQ?.question || `What do you know about ${chapterTitle}?`}`;
+        const msg = result.nextQuestion || blabberingMsg;
         return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
       }
 
@@ -235,7 +236,8 @@ const evaluateAnswerNode = async (state) => {
         return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, is_complete: true, mode: 'quit', transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
       }
       log.warn(`Chapter Off-topic warning #${warningCount + 1}: ${state.sessionId}`);
-      const msg = consolidated.nextQuestion || `Please stay focused on ${chapterTitle}.`;
+      const blabberingMsg = `Listen, we're here to review ${chapterTitle}. Random answers and blabbering aren't going to help you pass. Let's get back to it: ${lastQ?.question || `What do you know about ${chapterTitle}?`}`;
+      const msg = consolidated.nextQuestion || blabberingMsg;
       return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
     }
 
@@ -252,6 +254,55 @@ const evaluateAnswerNode = async (state) => {
     }
 
     const evalResult = consolidated?.evaluation || { score: 7, feedback: 'Acknowledged.' };
+
+    // ── SKIP DETECTION & FORCED ADVANCEMENT ──────────────────────────────────
+    const skipPattern = /\b(i don'?t know|skip|pass|next question|another question|move on|no clue|idk|no idea|didn'?t study|forgot|don'?t understand|don'?t get it|question please|never heard of|what is this|tell me|explain this|not sure|uncertain)\b/i;
+    const isManualSkip = skipPattern.test(answer.trim());
+    
+    // Safety list of general topics for the chapter to use if AI fails
+    const SAFETY_TOPICS = [
+      "the core purpose and why it matters in production",
+      "the most common mistake junior developers make with it",
+      "how it handles performance when things get scaled up",
+      "a specific real-world debugging scenario you've faced",
+      "the main trade-offs compared to alternative approaches",
+      "how you'd explain it to a non-technical stakeholder"
+    ];
+
+    if (evalResult.isSkip || isManualSkip) {
+      log.info(`[SkipDetection] Mandatory skip requested (LLM=${!!evalResult.isSkip}, Regex=${isManualSkip}). Forcing new topic.`);
+      try {
+        const rescue = await aiService.generateCompletion(
+          chapterPrompts.CHAPTER_GENERATE_QUESTION(
+            chapterTitle, adminPrompt, state.coveredTopics,
+            nextNum, state.maxQuestions, state.difficultyLevel
+          )
+        );
+        let nextQ = rescue?.text;
+        let nextTopic = rescue?.topic;
+
+        // If rescue failed to get a new question, use a safety topic
+        if (!nextQ) {
+            const safetyTopic = SAFETY_TOPICS[nextNum % SAFETY_TOPICS.length];
+            nextQ = `No worries, let's pivot. Can you tell me about ${chapterTitle} and ${safetyTopic}?`;
+            nextTopic = "Safety Pivot";
+        }
+
+        return {
+          ...state,
+          evaluation: { ...evalResult, score: 0, isSkip: true, feedback: 'Student skipped or was confused by the question.' },
+          currentQuestion: nextQ,
+          questionCount: nextNum,
+          coveredTopics: [...state.coveredTopics, nextTopic],
+          answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: 0, type: 'technical', isSkip: true }],
+          questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: rescue?.expectedConcepts || [], difficulty: state.difficultyLevel }],
+          transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
+        };
+      } catch (e) {
+        log.error(`Forced skip generation failed: ${e.message}`);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // ── FOLLOW-UP LOOP PREVENTION ─────────────────────────────────────────────
     // Guard 1: If the student scored >= 6, they answered well enough — do NOT loop
@@ -279,8 +330,32 @@ const evaluateAnswerNode = async (state) => {
 
     const newScore = updateScore(state.runningScore, evalResult.score || 7, nextNum);
     const newDifficulty = adaptDifficulty(state.difficultyLevel, newScore);
-    const nextQ = consolidated?.nextQuestion || `Let's continue with ${chapterTitle}.`;
-    const nextTopic = consolidated?.nextTopic || `Topic-${nextNum}`;
+    
+    let nextQ = consolidated?.nextQuestion;
+    let nextTopic = consolidated?.nextTopic;
+
+    // ── RESCUE MECHANISM: If the LLM failed to provide a question, don't just loop. ──
+    if (!nextQ) {
+      log.warn(`[Rescue] No nextQuestion in consolidated response for Q${nextNum}. Generating a fresh one.`);
+      try {
+        const rescue = await aiService.generateCompletion(
+          chapterPrompts.CHAPTER_GENERATE_QUESTION(
+            chapterTitle, adminPrompt, state.coveredTopics,
+            nextNum, state.maxQuestions, state.difficultyLevel
+          )
+        );
+        nextQ = rescue?.text;
+        nextTopic = rescue?.topic;
+      } catch (e) { log.error(`Rescue generation failed: ${e.message}`); }
+    }
+
+    // Final fallback if even the rescue failed - NEVER repeat the exact last question
+    if (!nextQ || nextQ === lastQ?.question) {
+      const cleanLastQ = lastQ?.question?.replace(/^Let's stick with the last point: /i, '') || '';
+      const safetyPivot = `Actually, let's step back the core of ${chapterTitle}. How would you define its main purpose to someone picking it up for the first time?`;
+      nextQ = nextQ === lastQ?.question || !cleanLastQ ? safetyPivot : `Let's stick with the last point: ${cleanLastQ}`;
+    }
+    nextTopic = nextTopic || lastQ?.topic || `Topic-${nextNum}`;
 
     return {
       ...state,
@@ -400,7 +475,8 @@ const evaluateAnswerNode = async (state) => {
 
     // First offense → issue warning, re-ask the same question
     log.warn(`Off-topic warning #${warningCount + 1} for session: ${state.sessionId}`);
-    const warningMsg = consolidated.nextQuestion || `Please stay focused on the ${state.jobRole} interview topics.`;
+    const blabberingMsg = `Listen, we're here to review the role of ${state.jobRole}. Random answers and blabbering aren't going to help you pass. Let's get back to it: ${lastQ?.question || 'Tell me about your tech stack.'}`;
+    const warningMsg = consolidated.nextQuestion || blabberingMsg;
     return {
       ...state,
       currentQuestion: warningMsg,

@@ -41,7 +41,7 @@ export const ttsService = {
       if (!fs.existsSync(PIPER_MODEL)) return reject(new Error('Piper model not found'));
 
       log.info(`🔊 Piper TTS: Synthesizing "${text.slice(0, 30)}..."`);
-      
+
       const piperDir = path.dirname(PIPER_BIN);
       const piper = spawn(PIPER_BIN, [
         '--model', PIPER_MODEL,
@@ -96,12 +96,12 @@ export const ttsService = {
     if (!cleanText) return null;
 
     const hash = crypto.createHash('md5').update(cleanText).digest('hex').slice(0, 8);
-    
+
     // Piper uses .wav, Gemini uses .mp3
     // We check for either existing file to avoid re-synthesis
     const piperFileName = `${sessionId}_${hash}.wav`;
     const geminiFileName = `${sessionId}_${hash}.mp3`;
-    
+
     if (fs.existsSync(path.join(OUTPUT_DIR, piperFileName))) return `/audio/${piperFileName}`;
     if (fs.existsSync(path.join(OUTPUT_DIR, geminiFileName))) return `/audio/${geminiFileName}`;
 

@@ -148,7 +148,7 @@ const getMockResponse = (prompt) => {
       const answerMatch = prompt.match(/CANDIDATE'S ANSWER:\s*"([^"]*)"/i)
         || prompt.match(/candidate(?:'s)? answer[:\s]+"([^"]+)"/i);
       if (answerMatch) candidateAnswer = answerMatch[1].toLowerCase();
-    } catch (_) {}
+    } catch (_) { }
 
     // Tech stack detection — scan the answer for known technologies
     const TECH_MAP = {
@@ -177,8 +177,8 @@ const getMockResponse = (prompt) => {
           // Normalise display name
           const display = kw === 'nextjs' ? 'Next.js'
             : kw === 'nestjs' ? 'NestJS'
-            : kw === 'nodejs' ? 'Node.js'
-            : kw.charAt(0).toUpperCase() + kw.slice(1);
+              : kw === 'nodejs' ? 'Node.js'
+                : kw.charAt(0).toUpperCase() + kw.slice(1);
           if (!found[category].includes(display)) found[category].push(display);
         }
       }
@@ -274,15 +274,15 @@ const getMockResponse = (prompt) => {
       const roleMatch = prompt.match(/assessing for\s*\\?"([^"\\]+)\\?"/i)
         || prompt.match(/jobRole[^"]*"([^"]+)"/i);
       if (roleMatch) jobRole = roleMatch[1];
-    } catch (_) {}
+    } catch (_) { }
 
     // Extract a meaningful topic from their answer to ask about
     const topicHooks = [
-      { pattern: /api/i,            question: `So when you were building that API layer — how did you handle authentication? Like, were you doing JWT or sessions?` },
-      { pattern: /database|db/i,    question: `Interesting — when you picked that database, what made you go with it over the alternatives?` },
+      { pattern: /api/i, question: `So when you were building that API layer — how did you handle authentication? Like, were you doing JWT or sessions?` },
+      { pattern: /database|db/i, question: `Interesting — when you picked that database, what made you go with it over the alternatives?` },
       { pattern: /frontend|ui|react|vue|angular/i, question: `Got it. On the frontend side — how did you manage state? Like was there a pattern you followed or did you figure it out as you went?` },
-      { pattern: /backend|server|node|express/i,   question: `Right. And on the server side — how did you handle errors? Like if something failed in the middle of a request, what happened?` },
-      { pattern: /team|collaborate|work with/i,    question: `Interesting. When you were working with that team, how did you handle disagreements about technical decisions?` },
+      { pattern: /backend|server|node|express/i, question: `Right. And on the server side — how did you handle errors? Like if something failed in the middle of a request, what happened?` },
+      { pattern: /team|collaborate|work with/i, question: `Interesting. When you were working with that team, how did you handle disagreements about technical decisions?` },
       { pattern: /deploy|production|devops|ci\/cd|docker/i, question: `Got it. And how was the deployment handled? Was that something you were involved in, or did another team manage it?` },
       { pattern: /learn|picked up|taught myself|self.?taught/i, question: `That's a solid path. What's the hardest thing you had to learn on the job there — something that wasn't in any tutorial?` },
     ];
@@ -320,7 +320,7 @@ const getMockResponse = (prompt) => {
       const roleMatch = prompt.match(/assessing for\s*\\?"([^"\\]+)\\?"/i)
         || prompt.match(/"jobRole"[^"]*"([^"]+)"/i);
       if (roleMatch) jobRole = roleMatch[1];
-    } catch (_) {}
+    } catch (_) { }
 
     const transitions = [
       `Right, that all makes sense for the ${jobRole} side. So — let's talk about some real scenarios. How do you typically think about performance when you're building something new?`,
@@ -365,7 +365,7 @@ const getMockResponse = (prompt) => {
           .map(l => l.replace(/^\s*\d+\.\s*/, '').trim())
           .filter(t => t && t !== '(none yet)');
       }
-    } catch (_) {}
+    } catch (_) { }
 
     // Detect special cases from the answer
     const candidateTrimmed = candidateAnswer.trim().toLowerCase();
@@ -465,7 +465,7 @@ const getMockResponse = (prompt) => {
           .map(l => l.replace(/^\s*\d+\.\s*/, '').trim())
           .filter(t => t && t !== 'None yet' && t !== '(none yet)');
       }
-    } catch (_) {}
+    } catch (_) { }
 
     const uncovered = MOCK_QUESTION_POOL.filter(q => !coveredTopics.includes(q.topic));
     const pool = uncovered.length > 0 ? uncovered : MOCK_QUESTION_POOL;
@@ -512,7 +512,7 @@ const getMockResponse = (prompt) => {
           .map(l => l.replace(/^\s*\d+\.\s*/, '').trim())
           .filter(t => t && t !== '(none yet)');
       }
-    } catch (_) {}
+    } catch (_) { }
 
     const topicBreakdown = coveredTopics.slice(0, 5).map(t => ({
       topic: t,
@@ -542,7 +542,7 @@ const getMockResponse = (prompt) => {
     };
   }
 
-  return { text: "Got it. Let's keep going.", stage: 'UNKNOWN' };
+  return { text: "Got it. Let's keep going.", nextQuestion: "Got it. Let's keep going.", stage: 'UNKNOWN' };
 };
 
 

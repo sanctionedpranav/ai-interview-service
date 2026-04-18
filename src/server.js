@@ -11,6 +11,8 @@ import interviewRoutes from './routes/interviewRoutes.js';
 import { log } from './utils/logger.js';
 // Initialize BullMQ queue and worker for interview graph processing
 import './queues/interviewQueue.js';
+// M12: Session cleanup — expires abandoned/stale sessions periodically
+import { runSessionCleanup } from './services/sessionCleanup.js';
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -107,4 +109,9 @@ app.listen(config.port, async () => {
   console.log('  Nodes: introduction → vad_check → stt_transcribe → evaluate_answer');
   console.log('         → generate_question / followup_question → tts_speak → END');
   console.log('\x1b[35m\x1b[1m' + '═'.repeat(55) + '\x1b[0m\n');
+
+  // ── M12: Session Cleanup Job ─────────────────────────────────────────────────
+  runSessionCleanup(); // Run on startup to clean any stale sessions from last crash
+  setInterval(runSessionCleanup, 30 * 60 * 1000); // Then every 30 minutes
+  log.success('Session cleanup scheduler started (every 30 min)');
 });

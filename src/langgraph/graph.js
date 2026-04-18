@@ -134,21 +134,20 @@ const evaluateAnswerNode = async (state) => {
 
   if (!answer) {
     log.warn('Empty answer — skipping evaluation');
-    return { ...state, evaluation: { score: 5, needsFollowup: false } };
+    return { ...state, evaluation: { score: 0, needsFollowup: false } };
   }
 
   // ── CHAPTER INTERVIEW MODE ────────────────────────────────────────
   if (state.interviewMode === 'chapter') {
-    const chapterTitle = state.chapterTitle || state.jobRole;
-    const adminPrompt = state.customPrompt || `Questions about ${chapterTitle}`;
+    const adminPrompt = state.customPrompt || "Technical assessment strictly based on provided instructions.";
     const nextNum = state.questionCount + 1;
 
-    // Skip background discovery for chapter mode — go straight to chapter evaluation
+    // Skip background discovery for chapter mode — go straight to evaluation
     if (state.isIntroQuestion) {
       const repeatPattern = /\b(repeat|say that again|didn'?t understand|didn'?t get|rephrase|what (was|were|did you) (you |the )?ask|could you repeat|please repeat|say it again|come again|pardon|huh\??)\b/i;
       if (repeatPattern.test(answer.trim())) {
         log.info(`Chapter Intro Question - Repeat Request detected`);
-        const repeatedQ = lastQ?.question || `Can you tell me more about ${chapterTitle}?`;
+        const repeatedQ = lastQ?.question || "Can you share your thoughts on the topic discussed?";
         return {
           ...state,
           currentQuestion: `Oh, yeah sure! I was asking: ${repeatedQ}`,
@@ -156,10 +155,39 @@ const evaluateAnswerNode = async (state) => {
         };
       }
 
+      // ── M3: SKIP DETECTION ON FIRST QUESTION ──────────────────────────────────
+      // If the student says "I don't know" or "skip" on the very first question,
+      // generate a fresh question instead of scoring a blank/gibberish answer.
+      const skipPattern = /\b(i don'?t know|skip|pass|next question|another question|move on|no clue|idk|no idea|didn'?t study|forgot|don'?t understand|don'?t get it|question please|never heard of|not sure|uncertain)\b/i;
+      if (skipPattern.test(answer.trim())) {
+        log.info(`[SkipDetection] Skip on chapter intro question. Generating a fresh starting question.`);
+        try {
+          const freshQ = await aiService.generateCompletion(
+            chapterPrompts.CHAPTER_GENERATE_QUESTION(
+              adminPrompt, state.coveredTopics, 1, state.maxQuestions, state.difficultyLevel
+            )
+          );
+          const nextQ = freshQ?.text || "No worries! Let's try a different angle based on the instructions.";
+          const nextTopic = freshQ?.topic || 'Introduction';
+          return {
+            ...state,
+            currentQuestion: nextQ,
+            questionCount: 1,
+            isIntroQuestion: false,
+            coveredTopics: [...state.coveredTopics, nextTopic],
+            answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: 0, type: 'technical', isSkip: true }],
+            questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: freshQ?.expectedConcepts || [], difficulty: state.difficultyLevel }],
+            transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
+          };
+        } catch (e) {
+          log.error(`M3 intro skip generation failed: ${e.message}`);
+        }
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       // Even the first "intro" answer goes through chapter evaluation
       const result = await aiService.generateCompletion(
         chapterPrompts.CHAPTER_CONSOLIDATED_INTERACTION({
-          chapterTitle,
           adminPrompt,
           lastQuestion: lastQ?.question || '',
           candidateAnswer: answer,
@@ -183,13 +211,24 @@ const evaluateAnswerNode = async (state) => {
           return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, is_complete: true, mode: 'quit', transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
         }
         log.warn(`Chapter Off-topic warning #${warningCount + 1}: ${state.sessionId}`);
-        const blabberingMsg = `Listen, we're here to review ${chapterTitle}. Random answers and blabbering aren't going to help you pass. Let's get back to it: ${lastQ?.question || `What do you know about ${chapterTitle}?`}`;
-        const msg = result.nextQuestion || blabberingMsg;
+        const msg = result.nextQuestion || "Let's try to stay focused on the technical topic.";
         return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
       }
 
+      // ── STRESS DETECTION ──────────────────────────────────────────────────────────
+      if (result?.evaluation?.isStressed) {
+        log.info(`Chapter Intro - Stress detected. Routing to recovery.`);
+        const recovery = await aiService.generateCompletion(chapterPrompts.CHAPTER_EMOTIONAL_RECOVERY(adminPrompt, lastQ?.question));
+        const recoveryMsg = recovery?.text || "Hey, no pressure at all. Let's start with something very basic to get into the flow.";
+        return {
+          ...state,
+          currentQuestion: recoveryMsg,
+          transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: recoveryMsg }],
+        };
+      }
+
       const evalResult = result?.evaluation || { score: 7, feedback: 'Acknowledged.' };
-      const nextQ = result?.nextQuestion || `Can you tell me more about ${chapterTitle}?`;
+      const nextQ = result?.nextQuestion || "Moving on, can you tell me more about the next concept?";
       const nextTopic = result?.nextTopic || 'Concept';
 
       return {
@@ -212,7 +251,6 @@ const evaluateAnswerNode = async (state) => {
     log.info(`Chapter interaction Q${nextNum}...`);
     const consolidated = await aiService.generateCompletion(
       chapterPrompts.CHAPTER_CONSOLIDATED_INTERACTION({
-        chapterTitle,
         adminPrompt,
         lastQuestion: lastQ?.question || '',
         candidateAnswer: answer,
@@ -236,15 +274,26 @@ const evaluateAnswerNode = async (state) => {
         return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, is_complete: true, mode: 'quit', transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
       }
       log.warn(`Chapter Off-topic warning #${warningCount + 1}: ${state.sessionId}`);
-      const blabberingMsg = `Listen, we're here to review ${chapterTitle}. Random answers and blabbering aren't going to help you pass. Let's get back to it: ${lastQ?.question || `What do you know about ${chapterTitle}?`}`;
-      const msg = consolidated.nextQuestion || blabberingMsg;
+      const msg = consolidated.nextQuestion || "Let's focus back on the technical topic.";
       return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
+    }
+
+    // ── STRESS DETECTION ──────────────────────────────────────────────────────────
+    if (consolidated?.evaluation?.isStressed) {
+      log.info(`Chapter Interaction - Stress detected. Routing to recovery.`);
+      const recovery = await aiService.generateCompletion(chapterPrompts.CHAPTER_EMOTIONAL_RECOVERY(adminPrompt, lastQ?.question));
+      const recoveryMsg = recovery?.text || "No worries, let's take a step back and look at a simpler concept first.";
+      return {
+        ...state,
+        currentQuestion: recoveryMsg,
+        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: recoveryMsg }],
+      };
     }
 
     if (consolidated?.evaluation?.isRepeatRequest) {
       log.info(`Chapter interaction Q${nextNum} - Repeat Request detected`);
       // Use the LLM's naturally rephrased question
-      const repeatedQ = consolidated.nextQuestion || lastQ?.question || `Can you tell me more about ${chapterTitle}?`;
+      const repeatedQ = consolidated.nextQuestion || lastQ?.question || "Can you share your thoughts on the topic discussed?";
       return {
         ...state,
         // Do NOT advance questionCount, coveredTopics, answerHistory, or questionHistory
@@ -256,7 +305,7 @@ const evaluateAnswerNode = async (state) => {
     const evalResult = consolidated?.evaluation || { score: 7, feedback: 'Acknowledged.' };
 
     // ── SKIP DETECTION & FORCED ADVANCEMENT ──────────────────────────────────
-    const skipPattern = /\b(i don'?t know|skip|pass|next question|another question|move on|no clue|idk|no idea|didn'?t study|forgot|don'?t understand|don'?t get it|question please|never heard of|what is this|tell me|explain this|not sure|uncertain)\b/i;
+    const skipPattern = /\b(i don'?t know|skip|pass|next question|another question|move on|no clue|idk|no idea|didn'?t study|forgot|don'?t understand|don'?t get it|question please|never heard of|not sure|uncertain)\b/i;
     const isManualSkip = skipPattern.test(answer.trim());
     
     // Safety list of general topics for the chapter to use if AI fails
@@ -274,7 +323,7 @@ const evaluateAnswerNode = async (state) => {
       try {
         const rescue = await aiService.generateCompletion(
           chapterPrompts.CHAPTER_GENERATE_QUESTION(
-            chapterTitle, adminPrompt, state.coveredTopics,
+            adminPrompt, state.coveredTopics,
             nextNum, state.maxQuestions, state.difficultyLevel
           )
         );
@@ -284,7 +333,7 @@ const evaluateAnswerNode = async (state) => {
         // If rescue failed to get a new question, use a safety topic
         if (!nextQ) {
             const safetyTopic = SAFETY_TOPICS[nextNum % SAFETY_TOPICS.length];
-            nextQ = `No worries, let's pivot. Can you tell me about ${chapterTitle} and ${safetyTopic}?`;
+            nextQ = `Alright, let's pivot slightly. I'd like to hear about ${safetyTopic}.`;
             nextTopic = "Safety Pivot";
         }
 
@@ -340,7 +389,7 @@ const evaluateAnswerNode = async (state) => {
       try {
         const rescue = await aiService.generateCompletion(
           chapterPrompts.CHAPTER_GENERATE_QUESTION(
-            chapterTitle, adminPrompt, state.coveredTopics,
+            adminPrompt, state.coveredTopics,
             nextNum, state.maxQuestions, state.difficultyLevel
           )
         );
@@ -352,7 +401,7 @@ const evaluateAnswerNode = async (state) => {
     // Final fallback if even the rescue failed - NEVER repeat the exact last question
     if (!nextQ || nextQ === lastQ?.question) {
       const cleanLastQ = lastQ?.question?.replace(/^Let's stick with the last point: /i, '') || '';
-      const safetyPivot = `Actually, let's step back the core of ${chapterTitle}. How would you define its main purpose to someone picking it up for the first time?`;
+      const safetyPivot = `Actually, let's take a step back and look at the core logic here. How would you define its main purpose for a production application?`;
       nextQ = nextQ === lastQ?.question || !cleanLastQ ? safetyPivot : `Let's stick with the last point: ${cleanLastQ}`;
     }
     nextTopic = nextTopic || lastQ?.topic || `Topic-${nextNum}`;
@@ -525,38 +574,6 @@ const evaluateAnswerNode = async (state) => {
 
   log.evaluateResult(evalResult.score || 7, evalResult.rating || 'Good', evalResult.needsFollowup, newDifficulty);
 
-  // ── EMOTIONAL RECOVERY: candidate is clearly stressed/anxious ───────────
-  if (evalResult.isStressed) {
-    log.info(`😟 Stress detected for session: ${state.sessionId} — triggering emotional recovery`);
-    try {
-      const recovery = await aiService.generateCompletion(
-        prompts.EMOTIONAL_RECOVERY(state.jobRole, lastQ?.question || '', state.candidateContext)
-      );
-      if (recovery?.text) nextQ = recovery.text;
-    } catch (e) {
-      log.warn(`Emotional recovery prompt failed: ${e.message}`);
-    }
-  }
-
-  // ── CHALLENGE FOLLOW-UP: candidate nailed it — go deeper on same topic ──
-  if (!evalResult.isStressed && (evalResult.score || 0) >= 9 && !state.is_complete) {
-    log.info(`🔥 Exceptional answer (score ${evalResult.score}) — triggering challenge follow-up`);
-    try {
-      const challenge = await aiService.generateCompletion(
-        prompts.CHALLENGE_FOLLOW_UP(
-          state.jobRole,
-          lastQ?.question || '',
-          answer,
-          lastQ?.topic || nextTopic,
-          state.candidateContext
-        )
-      );
-      if (challenge?.text) nextQ = challenge.text;
-    } catch (e) {
-      log.warn(`Challenge follow-up prompt failed: ${e.message}`);
-    }
-  }
-
   return {
     ...state,
     evaluation: evalResult,
@@ -584,7 +601,6 @@ const evaluateAnswerNode = async (state) => {
       { role: 'candidate', text: answer },
       { role: 'interviewer', text: nextQ }
     ],
-    // Complete only when the LLM agrees AND the hard minimum is met
     is_complete: !!(consolidated?.is_complete && nextNum >= MIN_QUESTIONS),
   };
 };
@@ -593,15 +609,14 @@ const evaluateAnswerNode = async (state) => {
 const generateQuestionNode = async (state) => {
   // ── CHAPTER INTERVIEW MODE ────────────────────────────────────────
   if (state.interviewMode === 'chapter') {
-    const chapterTitle = state.chapterTitle || state.jobRole;
-    const adminPrompt = state.customPrompt || `Ask questions about ${chapterTitle}`;
+    const adminPrompt = state.customPrompt || "Technical assessment strictly based on provided instructions.";
 
     // First question: use chapter introduction prompt
     if (state.isIntroQuestion) {
       const intro = await aiService.generateCompletion(
-        chapterPrompts.CHAPTER_INTRODUCTION(chapterTitle, adminPrompt)
+        chapterPrompts.CHAPTER_INTRODUCTION(adminPrompt)
       );
-      const text = intro?.text || `Hi! Let's review ${chapterTitle}. To start, can you explain the core concepts?`;
+      const text = intro?.text || "Hi! Let's get started with the assessment. To begin, can you share your thoughts on the topic at hand?";
       return {
         ...state,
         currentQuestion: text,
@@ -613,11 +628,11 @@ const generateQuestionNode = async (state) => {
     // Subsequent questions: use chapter generate prompt
     const q = await aiService.generateCompletion(
       chapterPrompts.CHAPTER_GENERATE_QUESTION(
-        chapterTitle, adminPrompt, state.coveredTopics,
+        adminPrompt, state.coveredTopics,
         state.questionCount, state.maxQuestions, state.difficultyLevel
       )
     );
-    const text = q?.text || `Can you tell me more about a key concept in ${chapterTitle}?`;
+    const text = q?.text || "Can you tell me more about a key concept within the scope of our instructions?";
     return {
       ...state,
       currentQuestion: text,
@@ -629,7 +644,7 @@ const generateQuestionNode = async (state) => {
         topic: q?.topic || 'Concept',
         type: 'main',
         expectedConcepts: q?.expectedConcepts || [],
-        difficulty: state.difficultyLevel
+        difficulty: state.difficultyLevel,
       }],
       transcript: [...state.transcript, { role: 'interviewer', text }],
     };
@@ -693,10 +708,9 @@ const generateQuestionNode = async (state) => {
 const endInterviewNode = async (state) => {
   let report;
   if (state.interviewMode === 'chapter') {
-    const chapterTitle = state.chapterTitle || state.jobRole;
-    const adminPrompt = state.customPrompt || `Chapter review of ${chapterTitle}`;
+    const adminPrompt = state.customPrompt || "Technical assessment.";
     report = await aiService.generateCompletion(
-      chapterPrompts.CHAPTER_FINAL_EVALUATION(chapterTitle, adminPrompt, state.answerHistory.filter(a => a.type === 'technical'))
+      chapterPrompts.CHAPTER_FINAL_EVALUATION(adminPrompt, state.answerHistory)
     );
   } else {
     report = await aiService.generateCompletion(
@@ -704,7 +718,7 @@ const endInterviewNode = async (state) => {
     );
   }
   const closingText = state.interviewMode === 'chapter'
-    ? `Alright, that wraps up your chapter review for ${state.chapterTitle || state.jobRole}! You've done well working through all the questions. I'm generating your full assessment report now — hang tight for just a moment.`
+    ? `Alright, that wraps up your chapter review! You've done well working through all the questions. I'm generating your full assessment report now — hang tight for just a moment.`
     : `That's a wrap! Thank you so much for going through the interview. You answered all ${state.maxQuestions} questions — I'm putting together your evaluation report right now.`;
   // If the previous node already set a closing message (ai-driven wrap up), preserve it
   // otherwise use the standard closing text.
@@ -745,8 +759,9 @@ const silenceNudgeNode = async (state) => {
 
   let nudge;
   if (state.interviewMode === 'chapter') {
+    const adminPrompt = state.customPrompt || "Technical assessment.";
     nudge = await aiService.generateCompletion(
-      chapterPrompts.CHAPTER_SILENCE_NUDGE(state.chapterTitle || state.jobRole, lastQ)
+      chapterPrompts.CHAPTER_SILENCE_NUDGE(adminPrompt, lastQ)
     );
   } else {
     nudge = await aiService.generateCompletion(

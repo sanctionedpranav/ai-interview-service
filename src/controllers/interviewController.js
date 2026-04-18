@@ -46,8 +46,8 @@ const sessionToState = (session, overrides = {}) => ({
     weakAreas: [],
     cheatingEvents: session.cheatingEvents || [],
     transcript: session.transcript || [],
-    // Chapter interview fields
-    interviewMode: session.interviewMode || 'generic',
+    // Chapter interview fields (now the default mode)
+    interviewMode: session.interviewMode || 'chapter',
     customPrompt: session.customPrompt || null,
     chapterTitle: session.chapterTitle || null,
     // Output fields

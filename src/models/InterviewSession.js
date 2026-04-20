@@ -82,13 +82,33 @@ const InterviewSessionSchema = new mongoose.Schema({
 
   // ── Interview Security Metrics ────────────────────────────────────────────
   securityMetrics: {
+    // ── Existing browser behaviour counters ──────────────────────────────
     tabSwitchCount: { type: Number, default: 0 },
     copyAttemptCount: { type: Number, default: 0 },
     refreshAttemptCount: { type: Number, default: 0 },
     rightClickAttemptCount: { type: Number, default: 0 },
     devToolsAttemptCount: { type: Number, default: 0 },
     backNavigationAttempts: { type: Number, default: 0 },
+    // ── New: Multi-person / camera counters ──────────────────────────────
+    multiSpeakerCount: { type: Number, default: 0 },      // MULTIPLE_SPEAKERS_DETECTED
+    multiFaceCount: { type: Number, default: 0 },          // MULTIPLE_FACES_DETECTED
+    noFaceCount: { type: Number, default: 0 },             // FACE_NOT_DETECTED
+    gazeDeviationCount: { type: Number, default: 0 },      // GAZE_DEVIATION
+    // ── New: Answer integrity counters ──────────────────────────────────
+    aiAnswerSuspicionCount: { type: Number, default: 0 },  // AI_GENERATED_ANSWER_SUSPECTED
+    duplicateAnswerCount: { type: Number, default: 0 },    // DUPLICATE_ANSWER_DETECTED
+    suspiciousAnswerCount: { type: Number, default: 0 },   // ANSWER_TOO_LONG / CODE_PASTED_IN_TEXT
+    promptInjectionCount: { type: Number, default: 0 },    // PROMPT_INJECTION_ATTEMPT
+    profanityCount: { type: Number, default: 0 },          // PROFANITY_DETECTED
+    // ── New: Misc counters ───────────────────────────────────────────────
+    printAttemptCount: { type: Number, default: 0 },       // PRINT_ATTEMPT
+    micDisconnectCount: { type: Number, default: 0 },      // MICROPHONE_DISCONNECTED
+    // ── Aggregate ────────────────────────────────────────────────────────
     totalSuspiciousEvents: { type: Number, default: 0 },
+    // Weighted threat score (sum of EVENT_WEIGHTS per event fired)
+    weightedSuspicionScore: { type: Number, default: 0 },
+    // 'clean' | 'warning' | 'flag' | 'terminate'
+    suspicionThreatLevel: { type: String, default: 'clean' },
     protectionEnabled: { type: Boolean, default: false },
     protectionStartTime: { type: Date, default: null },
     lastSuspiciousEventTime: { type: Date, default: null },

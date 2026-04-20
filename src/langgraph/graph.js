@@ -36,6 +36,27 @@ import { aiService } from '../ai/aiService.js';
 import { prompts } from '../prompts/index.js';
 import { chapterPrompts } from '../prompts/chapterInterview.js';
 import { log } from '../utils/logger.js';
+import {
+  isGibberish,
+  countWords,
+  MIN_ANSWER_WORDS,
+} from '../utils/securityUtils.js';
+
+// ── Graph-level integrity constants ───────────────────────────────────────────
+// Edge Case 5.6: Basic profanity / abuse pattern.
+// The LLM can handle nuance — this is only for clear slurs / harassment.
+const PROFANITY_PATTERN = /\b(fuck(ing|er|off)?|shit|asshole|bitch|motherfucker|cunt|dick|bastard|prick)\b/gi;
+
+// Edge Case 5.4: Parrot detection — if ≥60% of the answer tokens appear in the question
+// this is an echo response (student is reading the question back, not answering it).
+const isParrotingQuestion = (question = '', answer = '') => {
+  if (!question || !answer) return false;
+  const qTokens = new Set(question.toLowerCase().split(/\W+/).filter((t) => t.length > 3));
+  const aTokens = answer.toLowerCase().split(/\W+/).filter((t) => t.length > 3);
+  if (aTokens.length === 0) return false;
+  const overlap = aTokens.filter((t) => qTokens.has(t)).length;
+  return overlap / aTokens.length >= 0.6;
+};
 
 // ── State ──────────────────────────────────────────────────────────────────────
 const merge = (left, right) => right ?? left;
@@ -132,9 +153,69 @@ const evaluateAnswerNode = async (state) => {
   const lastQ = state.questionHistory.slice(-1)[0];
   log.node('evaluate_answer', `"${answer.slice(0, 60)}..."`);
 
-  if (!answer) {
-    log.warn('Empty answer — skipping evaluation');
-    return { ...state, evaluation: { score: 0, needsFollowup: false } };
+  // ── Edge Case 3.6 / 3.7: Empty or too-short answer (last-resort graph guard) ──
+  // The controller already catches this, but direct graph invocations bypass it.
+  if (!answer || countWords(answer) < MIN_ANSWER_WORDS) {
+    log.warn('[Graph] Answer too short or empty — returning to silence nudge state.');
+    return {
+      ...state,
+      mode: 'silence',
+      currentQuestion: state.currentQuestion, // preserve last question
+      evaluation: { score: 0, needsFollowup: false, isSkip: true },
+    };
+  }
+
+  // ── Edge Case 3.8 / 5.8: Gibberish detection (graph-level guard) ─────────────
+  if (isGibberish(answer)) {
+    log.warn('[Graph] Gibberish answer detected — treating as silence.');
+    return {
+      ...state,
+      mode: 'silence',
+      currentQuestion: state.currentQuestion,
+      evaluation: { score: 0, needsFollowup: false, isSkip: true },
+    };
+  }
+
+  // ── Edge Case 5.6: Profanity / harassment detection ──────────────────────────
+  const profanityMatches = answer.match(PROFANITY_PATTERN);
+  if (profanityMatches) {
+    const profanityWarnings = state.cheatingEvents?.filter(e => e.event === 'PROFANITY_DETECTED').length || 0;
+    log.warn(`[Graph] Profanity detected (offense #${profanityWarnings + 1}): ${profanityMatches.join(', ')}`);
+    const newCheatingEvents = [
+      ...(state.cheatingEvents || []),
+      { event: 'PROFANITY_DETECTED', timestamp: new Date(), metadata: { matches: profanityMatches } },
+    ];
+    if (profanityWarnings >= 1) {
+      // Second offense → terminate
+      const termMsg = 'This interview has been ended due to inappropriate language. Please maintain professional conduct.';
+      return {
+        ...state,
+        cheatingEvents: newCheatingEvents,
+        currentQuestion: termMsg,
+        is_complete: true,
+        mode: 'quit',
+        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: termMsg }],
+      };
+    }
+    // First offense → warn and re-ask the question
+    const warnMsg = `Please maintain professional language during this interview. Let's try again: ${lastQ?.question || 'Could you answer the previous question?'}`;
+    return {
+      ...state,
+      cheatingEvents: newCheatingEvents,
+      currentQuestion: warnMsg,
+      transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: warnMsg }],
+    };
+  }
+
+  // ── Edge Case 5.4: Parrot / echo detection (student reads question back) ──────
+  if (lastQ?.question && isParrotingQuestion(lastQ.question, answer)) {
+    log.info('[Graph] Parrot/echo detected — treating as repeat request.');
+    const repeatedQ = lastQ.question;
+    return {
+      ...state,
+      currentQuestion: `Oh, I see you're echoing the question back. Let me re-ask: ${repeatedQ}`,
+      transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: `Let me re-ask: ${repeatedQ}` }],
+    };
   }
 
   // ── CHAPTER INTERVIEW MODE ────────────────────────────────────────

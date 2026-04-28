@@ -312,7 +312,7 @@ OUTPUT — Return ONLY valid JSON:
   },
 
   // ── 5. Consolidated Technical Interaction (Evaluate + Next Question) ──────
-  CONSOLIDATED_INTERACTION: ({ jobRole, lastQuestion, candidateAnswer, expectedConcepts, difficulty, coveredTopics, questionNumber, totalQuestions, candidateContext, codeContext }) => {
+  CONSOLIDATED_INTERACTION: ({ jobRole, lastQuestion, candidateAnswer, expectedConcepts, difficulty, coveredTopics, questionNumber, totalQuestions, candidateContext, codeContext, rollingHistory }) => {
     const coveredList = coveredTopics.length
       ? coveredTopics.map((t, i) => `  ${i + 1}. ${t}`).join('\n')
       : '  (none yet)';
@@ -355,6 +355,11 @@ ${codeContext.code}
 \`\`\`
 TEST RESULTS: ${JSON.stringify(codeContext.testResults)}
 ══════════════════════════════════════════════════════════════
+` : ''}
+${rollingHistory ? `
+━━━━━━━━━━━━━━━━━━━━━━━━ CONVERSATION HISTORY (Last 3 Exchanges) ━━━━━━━━━━━━━━━━━━━━━━━━
+${rollingHistory}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ` : ''}
 ═══════════════════════════════════════════════════════════════════════
 
@@ -671,7 +676,7 @@ OUTPUT — Return ONLY valid JSON:
     "communication": "How clearly did they explain concepts? Did they use good analogies? Were any explanations confusing?",
     "problemSolving": "How did they approach multi-step or ambiguous questions? Did they think out loud? Did they ask clarifying questions?"
   },
-  "summary": "3-4 sentence SPECIFIC engineering assessment. Must mention the candidate's actual tech stack, specific questions they did well/poorly on, and the one key factor driving the recommendation.",
+  "summary": "CONVERSATIONAL FEEDBACK: Written as if speaking directly to the student. E.g.: 'You have a solid base in React... I'd suggest brushing up on the event loop.' 3-4 sentences summarizing strengths, weaknesses, and a final motivational wrap-up line.",
   "integrityNote": "Factual note on any off-topic violations or tab-switch events, or 'No integrity issues detected.'"
 }
 `,

@@ -149,7 +149,7 @@ Interview lifecycle management:
 - Count only real technical questions, not greetings or clarifications.
 - Gradually move toward closing after enough coverage has been completed.
 - Before closing, ask a final stronger question or reflective question.
-- Then give a concise summary of strengths and areas to improve.
+- "summary": "CONVERSATIONAL FEEDBACK: Written as if speaking directly to the student. E.g.: 'You have a solid base in React... I'd suggest brushing up on the event loop.' 3-4 sentences summarizing strengths, weaknesses, and a final motivational wrap-up line."
 - Then politely close the session.
 - If the user asks to stop early, close immediately and professionally.
 - If the candidate performs poorly, still continue long enough to fairly assess fundamentals.
@@ -334,7 +334,7 @@ Return ONLY valid JSON:
   },
 
   // 3. Consolidated Interaction
-  CHAPTER_CONSOLIDATED_INTERACTION: ({ adminPrompt, lastQuestion, candidateAnswer, expectedConcepts, coveredTopics, questionNumber, totalQuestions }) => {
+  CHAPTER_CONSOLIDATED_INTERACTION: ({ adminPrompt, lastQuestion, candidateAnswer, expectedConcepts, coveredTopics, questionNumber, totalQuestions, rollingHistory }) => {
     const coveredList = coveredTopics.length ? coveredTopics.join(', ') : 'None yet';
     return buildPhase2Prompt(adminPrompt, `
 SITUATION: Evaluating Question ${questionNumber} (Target: 8-15).
@@ -342,6 +342,7 @@ EXPECTED CONCEPTS: ${expectedConcepts.join(', ')}
 LAST QUESTION: "${lastQuestion}"
 STUDENT ANSWER: "${candidateAnswer}"
 ALREADY COVERED: ${coveredList}
+${rollingHistory ? `\nCONVERSATION HISTORY (Last 3 Exchanges):\n${rollingHistory}\n` : ''}
 
 TASK:
 1. INTERNAL EVALUATION: Use SCORING_ENGINE (0-10) and BLUFF_DETECTION (focused on Big O and logic).

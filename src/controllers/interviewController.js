@@ -1,5 +1,8 @@
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { spawn } from 'child_process';
 import { InterviewSession } from '../models/InterviewSession.js';
 import { log } from '../utils/logger.js';
 import { interviewQueue, interviewQueueEvents } from '../queues/interviewQueue.js';
@@ -538,15 +541,27 @@ export const processAudio = async (req, res) => {
         let silenceDetected = false;
 
         if (audioFile.path && fs.existsSync(audioFile.path)) {
+            let pcmPath = null;
             try {
                 const { vadService } = await import('../speech/vad.js');
-                const pcm = fs.readFileSync(audioFile.path);
-                const hasSpeech = await vadService.isSpeechPresent(pcm);
+                
+                // ── FIX: Convert to PCM before VAD ──────────────────────────────────
+                // This is critical for mobile compatibility (WebM/M4A -> RAW PCM)
+                pcmPath = await convertToPcm(audioFile.path);
+                const pcmBuffer = fs.readFileSync(pcmPath);
+                
+                const hasSpeech = await vadService.isSpeechPresent(pcmBuffer);
                 vadService.resetState();
                 silenceDetected = !hasSpeech;
                 log.vadResult(hasSpeech, fileSizeKb);
             } catch (e) {
-                log.warn(`VAD skipped: ${e.message}`);
+                log.warn(`VAD skipped or failed: ${e.message}`);
+                // Fallback: If VAD fails, assume there is speech to allow STT to try
+                silenceDetected = false; 
+            } finally {
+                if (pcmPath && fs.existsSync(pcmPath)) {
+                    try { fs.unlinkSync(pcmPath); } catch (_) {}
+                }
             }
         }
 

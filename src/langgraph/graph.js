@@ -44,8 +44,16 @@ import {
 
 // ── Graph-level integrity constants ───────────────────────────────────────────
 // Edge Case 5.6: Basic profanity / abuse pattern.
-// The LLM can handle nuance — this is only for clear slurs / harassment.
-const PROFANITY_PATTERN = /\b(fuck(ing|er|off)?|shit|asshole|bitch|motherfucker|cunt|dick|bastard|prick)\b/gi;
+// The LLM can handle nuance — this is const countWords = (str) => (str || '').trim().split(/\s+/).length;
+const PROFANITY_PATTERN = /\b(bitch|bastard|fuck|shit|asshole|fucker|dick|pussy|slut|whore|cunt|faggot|nigger|chink|kike|spic|negro)\b/i;
+
+const getRollingHistory = (answerHistory, limit = 3) => {
+  return answerHistory
+    .filter(a => a.type === 'technical')
+    .slice(-limit)
+    .map(a => `Q: ${a.question}\nA: ${a.answer}`)
+    .join('\n\n');
+};
 
 // Edge Case 5.4: Parrot detection — if ≥60% of the answer tokens appear in the question
 // this is an echo response (student is reading the question back, not answering it).
@@ -277,6 +285,7 @@ const evaluateAnswerNode = async (state) => {
           coveredTopics: state.coveredTopics,
           questionNumber: 1,
           totalQuestions: state.maxQuestions,
+          rollingHistory: getRollingHistory(state.answerHistory, 3)
         })
       );
 
@@ -286,7 +295,7 @@ const evaluateAnswerNode = async (state) => {
       if (result?.evaluation?.isOffTopic) {
         const severity = result.evaluation.offTopicSeverity;
         const warningCount = state.offTopicWarningCount || 0;
-        if (severity === 'terminate' || warningCount >= 1) {
+      if (severity === 'terminate' || warningCount >= 2) {
           log.warn(`Chapter Off-topic termination: ${state.sessionId}`);
           const msg = result.nextQuestion || 'Session ended due to repeated off-topic responses.';
           return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, is_complete: true, mode: 'quit', transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
@@ -322,9 +331,9 @@ const evaluateAnswerNode = async (state) => {
         coveredTopics: [...state.coveredTopics, nextTopic],
         answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
         questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: result?.nextExpectedConcepts || [], difficulty: state.difficultyLevel }],
-        transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
-        // is_complete only when we've hit the hard minimum AND the LLM agrees
-        is_complete: !!(result?.is_complete && state.maxQuestions >= MIN_QUESTIONS),
+        // Harder completion check: AI wants to end AND we've hit maxQuestions
+        // unless it's an explicit quit/terminate.
+        is_complete: !!(result?.is_complete && nextNum >= state.maxQuestions),
       };
     }
 
@@ -338,8 +347,8 @@ const evaluateAnswerNode = async (state) => {
         expectedConcepts: lastQ?.expectedConcepts || [],
         difficulty: state.difficultyLevel,
         coveredTopics: state.coveredTopics,
-        questionNumber: nextNum,
         totalQuestions: state.maxQuestions,
+        rollingHistory: getRollingHistory(state.answerHistory, 3)
       })
     );
 
@@ -349,7 +358,7 @@ const evaluateAnswerNode = async (state) => {
     if (consolidated?.evaluation?.isOffTopic) {
       const severity = consolidated.evaluation.offTopicSeverity;
       const warningCount = state.offTopicWarningCount || 0;
-      if (severity === 'terminate' || warningCount >= 1) {
+      if (severity === 'terminate' || warningCount >= 2) {
         log.warn(`Chapter Off-topic termination: ${state.sessionId}`);
         const msg = consolidated.nextQuestion || 'Session ended due to repeated off-topic responses.';
         return { ...state, currentQuestion: msg, offTopicWarningCount: warningCount + 1, is_complete: true, mode: 'quit', transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: msg }] };
@@ -498,8 +507,8 @@ const evaluateAnswerNode = async (state) => {
       answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
       questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: consolidated?.nextExpectedConcepts || [], difficulty: newDifficulty }],
       transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
-      // Complete only when the LLM agrees AND the hard minimum is met
-      is_complete: !!(consolidated?.is_complete && nextNum >= MIN_QUESTIONS),
+      // Harder completion check: AI wants to end AND we've hit maxQuestions
+      is_complete: !!(consolidated?.is_complete && nextNum >= state.maxQuestions),
     };
   }
 
@@ -577,6 +586,7 @@ const evaluateAnswerNode = async (state) => {
       totalQuestions: state.maxQuestions,
       candidateContext: state.candidateContext,
       codeContext: state.codeContext,
+      rollingHistory: getRollingHistory(state.answerHistory, 3)
     })
   );
 
@@ -682,7 +692,8 @@ const evaluateAnswerNode = async (state) => {
       { role: 'candidate', text: answer },
       { role: 'interviewer', text: nextQ }
     ],
-    is_complete: !!(consolidated?.is_complete && nextNum >= MIN_QUESTIONS),
+    // Harder completion check: AI wants to end AND we've hit maxQuestions
+    is_complete: !!(consolidated?.is_complete && nextNum >= state.maxQuestions),
   };
 };
 
@@ -798,12 +809,22 @@ const endInterviewNode = async (state) => {
       prompts.FINAL_EVALUATION(state.jobRole, state.interviewType, state.answerHistory.filter(a => a.type === 'technical'), state.cheatingEvents, state.difficultyLevel)
     );
   }
-  const closingText = state.interviewMode === 'chapter'
-    ? `Alright, that wraps up your chapter review! You've done well working through all the questions. I'm generating your full assessment report now — hang tight for just a moment.`
+  
+  // ── FIX: Use the detailed AI summary for wording the final feedback ──────
+  const fallbackClosingText = state.interviewMode === 'chapter'
+    ? `Alright, that wraps up your chapter review! You've done well working through all the questions. I'm generating your full assessment report now.`
     : `That's a wrap! Thank you so much for going through the interview. You answered all ${state.maxQuestions} questions — I'm putting together your evaluation report right now.`;
-  // If the previous node already set a closing message (ai-driven wrap up), preserve it
-  // otherwise use the standard closing text.
-  const finalQuestion = state.is_complete && state.currentQuestion ? state.currentQuestion : closingText;
+
+  // Prefer the summary from the report as the spoken "good lines"
+  let finalQuestion = report?.summary || state.currentQuestion || fallbackClosingText;
+  
+  // If it's a chapter review, Sam (the AI) should sound more like a mentor
+  if (state.interviewMode === 'chapter' && report?.summary) {
+    // Prefix if the summary doesn't already sound like a closing
+    if (!report.summary.toLowerCase().startsWith('alright') && !report.summary.toLowerCase().startsWith('that’s')) {
+        finalQuestion = `Alright, that wraps up our review. ${report.summary}`;
+    }
+  }
 
   return {
     ...state,

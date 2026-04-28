@@ -331,9 +331,8 @@ const evaluateAnswerNode = async (state) => {
         coveredTopics: [...state.coveredTopics, nextTopic],
         answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
         questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: result?.nextExpectedConcepts || [], difficulty: state.difficultyLevel }],
-        // Harder completion check: AI wants to end AND we've hit maxQuestions
-        // unless it's an explicit quit/terminate.
-        is_complete: !!(result?.is_complete && nextNum >= state.maxQuestions),
+        // FIX: Use > (strictly greater) — same fix as other modes.
+        is_complete: !!(result?.is_complete && nextNum > state.maxQuestions),
       };
     }
 
@@ -507,8 +506,9 @@ const evaluateAnswerNode = async (state) => {
       answerHistory: [...state.answerHistory, { question: lastQ?.question, answer, score: evalResult.score || 7, evaluation: evalResult, type: 'technical' }],
       questionHistory: [...state.questionHistory, { question: nextQ, topic: nextTopic, type: 'main', expectedConcepts: consolidated?.nextExpectedConcepts || [], difficulty: newDifficulty }],
       transcript: [...state.transcript, { role: 'candidate', text: answer }, { role: 'interviewer', text: nextQ }],
-      // Harder completion check: AI wants to end AND we've hit maxQuestions
-      is_complete: !!(consolidated?.is_complete && nextNum >= state.maxQuestions),
+      // FIX: Use > (strictly greater) — same fix as generic mode. Prevents persist() from
+      // prematurely setting FINAL_EVALUATION before the last answer is submitted.
+      is_complete: !!(consolidated?.is_complete && nextNum > state.maxQuestions),
     };
   }
 
@@ -692,9 +692,12 @@ const evaluateAnswerNode = async (state) => {
       { role: 'candidate', text: answer },
       { role: 'interviewer', text: nextQ }
     ],
-    // Harder completion check: AI wants to end AND we've hit maxQuestions
-    is_complete: !!(consolidated?.is_complete && nextNum >= state.maxQuestions),
-  };
+    // FIX: Use > (strictly greater) so is_complete only fires AFTER the last question
+    // is answered. With >= it fired when nextNum EQUALED maxQuestions (i.e. after Q4 of 5),
+    // which caused persist() to set FINAL_EVALUATION on the DB while the router was still
+    // continuing the interview — leading to a 409 on the Q5 answer submission.
+    is_complete: !!(consolidated?.is_complete && nextNum > state.maxQuestions),
+};
 };
 
 // ── NODE: generate_question ───────────────────────────────────────────────────
@@ -886,9 +889,11 @@ const routeAfterEvaluate = (state) => {
   // Hard minimum guard: never end before MIN_QUESTIONS answers have been collected,
   // regardless of what the LLM returned for is_complete.
   const answeredCount = state.answerHistory?.filter(a => a.type === 'technical').length || state.questionCount || 0;
-  const belowMinimum = answeredCount < MIN_QUESTIONS;
+  // FIX: Make the floor dynamic so if maxQuestions is < 5, it respects the user's setting.
+  const effectiveMin = Math.min(MIN_QUESTIONS, state.maxQuestions || MIN_QUESTIONS);
+  const belowMinimum = answeredCount < effectiveMin;
 
-  // Route to end only when is_complete AND we've met the hard minimum
+  // Route to end only when is_complete AND we've met the floor
   if (state.is_complete && !belowMinimum) {
     return 'end_interview';
   }
